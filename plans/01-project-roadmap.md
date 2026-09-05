@@ -21,7 +21,7 @@ This roadmap implements the architecture defined in:
 | 07   | HTTP API                                   | Config compile/activate, status, eject           |
 | 08   | Metadata Preloading                        | pread() warming of exFAT metadata before UDC bind|
 
-Design decisions document at `state/design-decisions.md`.
+Design decisions document at `plans/02-design-decisions.md`.
 
 ---
 

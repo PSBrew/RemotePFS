@@ -1,0 +1,242 @@
+# RemotePFS Design Decisions
+
+Document finalized 2026-09-05. Records architectural decisions made during the design phase. Each decision includes context, reasoning, and consequences.
+
+> Migrated from PSBrew/RemotePFS-Research (`plans/02-design-decisions.md`) on 2026-09-05 and
+> updated to match the canonical specs (`specs/01-08`). Where a decision evolved during the
+> NBD + virtual exFAT pivot, the current decision is stated and the change is noted. The specs
+> remain authoritative for detail; this record explains why.
+
+## DD-01: NBD as Block Device Backend
+
+**Decision:** Use NBD (Network Block Device) over Unix socket as the block device backend for `g_mass_storage`, served by nbdkit with a Python plugin. Rejected FUSE + losetup and ublk for V1.
+
+*Update (2026-09-05): the NBD server is nbdkit (external process, Python plugin), not a hand-rolled NBD server inside `remotepfsd`. See spec 06.*
+
+**Context:** `g_mass_storage` (`f_mass_storage`) needs a regular file or block device for its LUN backing store. The virtual exFAT filesystem must be backed by NFS-mounted game files — we cannot pre-copy multi-gigabyte games to local storage.
+
+**Options considered:**
+
+| Option | Viable | Reason |
+|--------|--------|--------|
+| Regular file on NFS | No | `g_mass_storage` reads the file directly; can't intercept reads to translate sectors to NFS file offsets |
+| FUSE filesystem + losetup | No | Loop driver may use `splice_read`/`sendpage` paths that FUSE doesn't implement reliably. Fragile in kernel context. |
+| NBD (Unix socket) | Yes | Purpose-built: serves sector reads from userspace via a simple protocol. Mature, well-documented. |
+| ublk (io_uring) | Deferred to V2 | Faster but requires kernel 6.0+ and `CONFIG_BLK_DEV_UBLK`. Verify Radxa BSP 6.6 config before adopting. |
+| Custom kernel module | No | Maximum complexity for V1. Unnecessary when NBD exists. |
+| Hand-rolled NBD userspace server | No (superseded by nbdkit) | Protocol correctness, structured replies, and request-limit handling already solved by nbdkit; we implement only `pread()` and `extents()`. |
+
+**Consequences:**
+- nbdkit runs as a separate process, serving sectors over the Unix socket `/run/remotepfs/nbd.sock` to `/dev/nbd0`
+- `g_mass_storage` LUN file = `/dev/nbd0`
+- Protocol overhead: ~10-50 us per read request (Unix socket round-trip). Negligible vs NFS latency (~1-10 ms).
+- Requires `CONFIG_BLK_DEV_NBD` in kernel config (likely present in Radxa BSP 6.6)
+- Read-only enforced at three layers: nbdkit `--readonly`, `nbd-client -r`, and `g_mass_storage` `ro=1` (triple enforcement, spec 05)
+
+## DD-02: Virtual exFAT Filesystem (Not Pre-Made Images)
+
+**Decision:** Build a virtual exFAT filesystem in memory at startup, mapping virtual paths to NFS source files. Rejected pre-made `.exfat` image files on NAS.
+
+**Context:** User wanted to expose NAS folder contents directly, not require games to be pre-packaged as `.exfat` container files. ShadowMountPlus scans the exFAT filesystem and auto-detects game folders (directories with `param.sfo`) and image files (`.exfat`, `.ffpfs`, `.ffpkg`, `.ffpfsc`).
+
+**Options considered:**
+
+| Option | Viable | Reason |
+|--------|--------|--------|
+| Pre-made `.exfat` images on NAS | Rejected | Requires pre-packaging games, single-image-at-a-time switching, unbind/rebind cycle |
+| Virtual exFAT (in-memory build) | Yes | All games visible simultaneously, no pre-packaging, config-driven layout |
+| FUSE filesystem mounted directly | No | `g_mass_storage` needs block device, not mounted filesystem |
+
+**Consequences:**
+- exFAT metadata generated in memory at startup: boot sector (12 sectors), FAT (cluster chains), directory entries
+- Read-only exFAT — no write path, no allocation bitmap updates, no FAT modifications
+- exFAT spec followed: 64 KiB clusters (per ShadowMountPlus), 512-byte sectors (LVD), standard directory entry format
+- Directory recursion: `type=directory` config entries trigger recursive scan of NFS source, building subdirectory exFAT entries
+- Large directories possible — many games means large root directory, FAT grows proportionally
+
+## DD-03: Config-Driven Virtual Layout (TOML)
+
+**Decision:** Use TOML config file (`/etc/remotepfs/remotepfs.conf`) defining NFS mount sources and virtual path mappings. Multiple NFS servers supported.
+
+**Context:** User wanted to customize the virtual filesystem layout: map virtual paths to specific remote folders, support files and directories, point to different remote servers. Config must support hot-reload without service restart.
+
+**Format (spec 07):**
+
+```toml
+# remotepfs.conf — Virtual exFAT layout for RemotePFS
+
+[global]
+image_size_gib = 2048          # Virtual exFAT image size (GiB)
+cluster_size_kib = 64          # Locked to 64 (ShadowMountPlus)
+label = "RemotePFS"            # Volume label (11 chars max, uppercase)
+oem_name = "REMOTEPFS"         # OEM name (8 chars)
+
+[[sources]]
+name = "nas1"
+server = "192.168.1.100"
+export = "/volume1/games"
+mount_point = "/mnt/nas1"
+nfs_options = "nfsvers=4.1,nconnect=4,rsize=1048576,wsize=1048576,hard,noatime"
+
+[[entries]]
+virtual_path = "fps games"     # Directory in exFAT root (recursive scan)
+source = "/mnt/nas1/fpsgames/"
+type = "directory"
+
+[[entries]]
+virtual_path = "game.iso"      # Single file entry
+source = "/mnt/nas2/images/ps5game.iso"
+type = "file"
+```
+
+**Consequences:**
+- `[[sources]]` defines NFS mounts (server, export, mount point, options)
+- `[[entries]]` defines virtual paths with type (`file` or `directory`) and source path
+- Source paths reference NFS mount points, not raw servers
+- Multiple servers supported (each with separate NFS mount)
+- Validation rejects invalid configs before any layout change (field-level errors, spec 07)
+- TOML chosen over YAML/JSON per mkpfs conventions (TOML is standard in Python ecosystem)
+
+## DD-04: Config Hot-Reload via Two-Phase Compile/Activate
+
+**Decision:** Support config changes without service restart via a two-phase deploy API: `POST /api/config/compile` validates and compiles a new config into an inert generation (returns `gen_id`), then `POST /api/config/activate?gen=` atomically swaps the active generation. No inotify file watch.
+
+*Update (2026-09-05): superseded the earlier API reload + inotify design. See specs 07 and 08.*
+
+**Reload sequence (specs 07/08):**
+1. Compile: parse + validate TOML, scan NFS sources, build virtual exFAT layout, precompute extent table, assign stable file IDs (SHA256 of `virtual_path` truncated to 32 bits)
+2. Invalid config: return 422 with field-level errors; current generation keeps serving
+3. Activate: unbind UDC (PS5 sees disconnect), pickle new mapper state, restart nbdkit, reconnect nbd-client (`nbd-client -U ... -r`), poll `/sys/block/nbd0/size > 0`, warm cache via NBD pread, rebind UDC
+4. Concurrent activate attempts are guarded by an `asyncio.Lock`; the second attempt returns 423 `RELOAD_IN_PROGRESS`
+5. PS5 sees USB disconnect/reconnect — ShadowMountPlus handles this (10s stability wait + 15s scan interval)
+
+**Consequences:**
+- Unbind/rebind UDC is necessary — can't swap exFAT metadata while PS5 is mid-read
+- PS5 disruption is ~5-15 seconds (unbind + rebuild + rebind + ShadowMountPlus stability wait)
+- Not a "live" swap — this is a clean disconnect/reconnect, not transparent
+- Compile is side-effect-free (dry-run): validation failures never touch the serving generation
+- The active generation is immutable; in-flight reads finish against the old generation
+
+## DD-05: Single Active USB Device, Multiple Games
+
+**Decision:** V1 exposes a single USB gadget LUN with a single virtual exFAT filesystem containing all configured games. All games visible simultaneously. No LUN switching.
+
+**Context:** Original plan was one `.exfat` image per LUN, switching via symlink + UDC rebind. With virtual exFAT, all games appear in the same filesystem. ShadowMountPlus scans and detects all of them.
+
+**Consequences:**
+- Simpler: no game switching API needed
+- PS5 sees all games at once — ShadowMountPlus handles discovery
+- Config changes (add/remove games) still require the two-phase deploy + UDC unbind/rebind cycle (DD-04)
+- Single USB device, single LUN: `g_mass_storage` configuration is straightforward
+
+## DD-06: Metadata Preloading in V1
+
+**Decision:** Include `pread()`-based metadata warming in V1 scope. Warm the nbdkit cache (L1) and the NFS page cache (L2) with exFAT boot sectors, FAT, and root directory entries before UDC bind, using nbdsh/nbdcopy against the Unix socket with target ranges from `SectorMapper.get_hot_ranges()` (~9-10 MiB).
+
+*Update (2026-09-05): preloading was promoted from "inherent" to explicit warming. Because nbdkit is a separate process with its own cache filter, metadata must be pushed through the NBD chain before the PS5 ever issues a read.*
+
+**Rationale:** The PS5 mount sequence reads boot sector, FAT, and root directory immediately after USB enumeration. Without preloading, those first reads are NFS round-trips (~1-10 ms each) during partition scan. With warming, the PS5 initial scan is entirely cache hits (~50 ms).
+
+**Implementation:** After nbdkit start and nbd-client connect, before UDC bind: issue sequential `pread()` calls for hot LBAs (MBR, GPT, exFAT VBR, FAT, allocation bitmap, root directory, upcase table) through the full nbdkit chain. Skippable via `--no-preload` for development (spec 08/roadmap phase 6).
+
+## DD-07: HTTP API on localhost
+
+**Decision:** The `remotepfsd` service exposes an HTTP API on `127.0.0.1` for config management and status monitoring. No game switching endpoint (all games visible simultaneously per DD-05).
+
+*Update (2026-09-05): framework is FastAPI + Pydantic v2 + uvicorn (ASGI); superseded the earlier stdlib `http.server`/aiohttp sketch. See spec 08.*
+
+**Endpoints (two-phase deploy):**
+- `POST /api/config/compile` — validate + compile config, dry-run, returns `gen_id`
+- `POST /api/config/activate?gen=` — atomic generation swap
+- `GET /api/status` — service state, NFS mounts, NBD status, UDC status, game count
+- `GET /api/config`, `POST /api/config/reload` — config introspection and disk reload (spec 08)
+- `GET /api/health` — liveness check
+- `GET /api/games` — virtual filesystem entries visible to PS5
+- `POST /api/eject` — graceful UDC unbind
+
+**Consequences:**
+- FastAPI + Pydantic v2 + uvicorn (ASGI); async handlers, CPU-bound generation builds via `run_in_threadpool`
+- Localhost-only binding (`127.0.0.1:8080`, no external exposure)
+- No authentication (trusted local system)
+- Concurrent reload attempts return 423 `RELOAD_IN_PROGRESS` (DD-04)
+
+## DD-08: Python 3.11+ with uv, Following mkpfs Conventions
+
+**Decision:** Implementation language is Python 3.11+. Package management via uv. Linting via Ruff (line-length=119). Testing via pytest. Documentation via Google docstrings. Conventional Commits.
+
+**Rationale:** Matches mkpfs conventions. Python is suitable for the service layer (config compiler, HTTP API, NFS mount management, nbdkit plugin). Performance-critical path (NBD sector serving) is simple enough that Python's speed is adequate — the bottleneck is NFS latency, not Python overhead. nbdkit's C framework handles cache-hit requests without Python.
+
+**Consequences:**
+- `pyproject.toml` with uv configuration
+- Ruff with `line-length = 119` (matching mkpfs)
+- pytest for testing, including integration tests with NBD
+- Google-style docstrings
+- Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`)
+
+## DD-09: Implementation Repository Structure
+
+**Decision:** Private repo `PSBrew/RemotePFS` with code, specs, and plans. Research repo `PSBrew/RemotePFS-Research` keeps KB articles and reports as frozen research artifacts.
+
+*Update (2026-09-05): specs and plans now live ONLY in the implementation repo; the research repo retains KB articles, reports, and research state.*
+
+**Repository layout:**
+
+```
+PSBrew/RemotePFS (private)
+├── README.md
+├── docs/                     # User docs (roadmap phase 8)
+├── specs/                    # 01-08, canonical
+├── plans/
+│   ├── 01-project-roadmap.md
+│   └── 02-design-decisions.md
+├── src/remotepfs/
+│   ├── config_compiler.py    — TOML validation + generation compilation
+│   ├── exfat_builder.py      — exFAT metadata generation
+│   ├── sector_mapper.py      — sector offset to source file mapping
+│   ├── remotepfs_nbd.py      — nbdkit Python plugin (API v2)
+│   ├── nfs_manager.py        — NFS mount/unmount management
+│   ├── gadget_manager.py     — USB gadget configfs management
+│   ├── preloader.py          — metadata warming via NBD
+│   ├── api.py                — FastAPI application
+│   └── service.py            — systemd service main loop
+├── tests/
+├── config/
+│   ├── remotepfs.conf.example
+│   └── remotepfs.service
+├── pyproject.toml
+├── .claude/
+└── .gitignore
+```
+
+**Consequences:**
+- Implementation repo is the single home for specs and plans (research repo copies removed 2026-09-05)
+- Research repo KB articles + reports stay frozen
+- Implementation repo is the active development repo; no code exists yet (layout is planned, per roadmap)
+
+## DD-10: V1 Scope Summary
+
+| Feature | V1 | V2+ |
+|---------|-----|-----|
+| Multi-source NFS mounts | Config-driven | — |
+| NBD server | nbdkit + Python plugin, Unix socket, ro | ublk optimization |
+| Virtual exFAT builder | In-memory, ro, single LUN | — |
+| Config-driven virtual layout | TOML, file + directory | — |
+| Config hot-reload | Two-phase compile/activate | — |
+| Metadata preloading | pread() warming via NBD (~9-10 MiB) before UDC bind | — |
+| USB gadget (BOT) | Single LUN, ro | UAS (f_tcm) |
+| HTTP API | FastAPI + Pydantic v2 + uvicorn, localhost | Web UI |
+| Alternative transport backends | — | FTP/HTTP/BitTorrent |
+| Extracted folder mounting | — | FUSE virtual image |
+| Multi-network load balancing | — | Link aggregator |
+| Multiple simultaneous LUNs | — | Multi-game LUNs |
+
+## References
+
+- Canonical specs: `specs/01-08` in this repository
+- Roadmap: `plans/01-project-roadmap.md` (8 phases)
+- Research repo: `PSBrew/RemotePFS-Research` (KB 00-13, reports, frozen artifacts)
+- mkpfs: `PSBrew/MkPFS` (conventions reference)
+- ShadowMountPlus source: verified DD-02 (detects directories + image files)
+- NBD protocol: https://github.com/NetworkBlockDevice/nbd/blob/master/doc/proto.md
+- nbdkit Python plugin: https://libguestfs.org/nbdkit-python-plugin.1.html
+- exFAT specification: Microsoft exFAT Revision 1.00 (available via docs.microsoft.com)
