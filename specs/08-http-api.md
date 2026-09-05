@@ -296,63 +296,233 @@ def swap_gen(new: Generation) -> Generation:
 
 ### Framework
 
-Standard library `http.server` with routes mapped via a simple dispatch table. No external web framework dependency (aiohttp, Flask, FastAPI) to minimize dependency footprint on the SBC.
+FastAPI with async request handlers and Pydantic v2 models for request/response
+validation. Runs under uvicorn (ASGI). Async handlers avoid blocking the event
+loop during I/O-bound config parsing; CPU-bound generation builds are dispatched
+to a thread pool via `fastapi.concurrency.run_in_threadpool`.
 
 ```python
 # api.py
-import json
-import http.server
-from functools import partial
+from __future__ import annotations
 
-class RemotePfsHandler(http.server.BaseHTTPRequestHandler):
-    """HTTP API handler for remotepfsd."""
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime
 
-    routes: dict = {
-        ("GET", "/api/status"): "handle_status",
-        ("GET", "/api/config"): "handle_get_config",
-        ("PUT", "/api/config"): "handle_put_config",
-        ("POST", "/api/config/reload"): "handle_reload",
-        ("GET", "/api/health"): "handle_health",
-        ("GET", "/api/games"): "handle_games",
-    }
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
-    # Inject service context during construction
-    def __init__(self, service, *args, **kwargs):
-        self.service = service
-        super().__init__(*args, **kwargs)
+# --- Pydantic models ---
 
-    def do_GET(self): ...
-    def do_PUT(self): ...
-    def do_POST(self): ...
+class StatusResponse(BaseModel):
+    service: ServiceInfo
+    gadget: GadgetInfo
+    nbd: NbdInfo
+    nfs_mounts: list[NfsMountInfo]
+    config: ConfigInfo
+    system: SystemInfo
 
-    # Response helpers
-    def _json(self, data, status=200): ...
-    def _error(self, code, message, status): ...
+class ServiceInfo(BaseModel):
+    version: str
+    uptime_seconds: int
+    state: str
+    state_detail: str
+
+class GadgetInfo(BaseModel):
+    udc_bound: bool
+    udc_name: str | None
+    lun_file: str | None
+    lun_ro: bool
+    lun_size_bytes: int | None
+
+class NbdInfo(BaseModel):
+    connected: bool
+    socket_path: str
+    connections: int
+    requests_total: int
+    bytes_served: int
+    read_errors: int
+
+class NfsMountInfo(BaseModel):
+    name: str
+    server: str
+    export: str
+    mount_point: str
+    mounted: bool
+    state: str
+
+class ConfigInfo(BaseModel):
+    path: str
+    last_loaded: datetime
+    generation: int
+    game_count: int
+    valid: bool
+
+class SystemInfo(BaseModel):
+    memory_used_mib: float
+    page_cache_mib: float
+    cpu_percent: float
+
+class ConfigReplaceResponse(BaseModel):
+    status: str
+    generation: int
+    warnings: list[str] = Field(default_factory=list)
+    reload_time_ms: int
+
+class ValidationErrorDetail(BaseModel):
+    field: str
+    message: str
+
+class ConfigInvalidResponse(BaseModel):
+    status: str
+    errors: list[ValidationErrorDetail]
+
+class ReloadResponse(BaseModel):
+    status: str
+    generation: int
+    warnings: list[str] = Field(default_factory=list)
+    reload_time_ms: int
+
+class HealthResponse(BaseModel):
+    status: str
+    uptime_seconds: int
+
+class GameEntry(BaseModel):
+    virtual_path: str
+    type: str  # "file" | "directory"
+    size_bytes: int | None = None
+    entry_count: int | None = None
+    total_size_bytes: int | None = None
+
+class GamesResponse(BaseModel):
+    games: list[GameEntry]
+
+class ErrorBody(BaseModel):
+    code: str
+    message: str
+    details: dict | None = None
+
+class ErrorResponse(BaseModel):
+    error: ErrorBody
+
+# --- App ---
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: load config, start nbdkit, connect NBD, bind UDC."""
+    await app.state.service.startup()
+    yield
+    await app.state.service.shutdown()
+
+def create_app(service: "RemotePfsService") -> FastAPI:
+    """Create FastAPI app with service context injected via app.state."""
+    app = FastAPI(
+        title="RemotePFS API",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+    app.state.service = service
+    _register_routes(app)
+    return app
+
+def _register_routes(app: FastAPI) -> None:
+    @app.get("/api/status", response_model=StatusResponse)
+    async def get_status() -> StatusResponse:
+        """Return current service state."""
+        return await app.state.service.get_status()
+
+    @app.get("/api/config")
+    async def get_config() -> dict:
+        """Return active config as JSON."""
+        return await app.state.service.get_config_json()
+
+    @app.put("/api/config", response_model=ConfigReplaceResponse)
+    async def put_config(request: Request) -> ConfigReplaceResponse:
+        """Replace entire configuration. Body is TOML or JSON."""
+        content_type = request.headers.get("content-type", "")
+        body = await request.body()
+        if len(body) > 1_048_576:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                detail={"code": "PAYLOAD_TOO_LARGE",
+                        "message": "Config body exceeds 1 MiB limit"},
+            )
+        if "toml" in content_type:
+            config_text = body.decode("utf-8")
+        elif "json" in content_type:
+            config_text = body.decode("utf-8")
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                detail={"code": "UNSUPPORTED_MEDIA_TYPE",
+                        "message": "Content-Type must be application/toml or application/json"},
+            )
+        try:
+            result = await run_in_threadpool(
+                app.state.service.replace_config, config_text
+            )
+        except ConfigValidationError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=ConfigInvalidResponse(status="rejected", errors=exc.errors).model_dump(),
+            )
+        return result
+
+    @app.post("/api/config/reload", response_model=ReloadResponse)
+    async def reload_config() -> ReloadResponse:
+        """Reload config from on-disk path."""
+        return await run_in_threadpool(app.state.service.reload_config)
+
+    @app.get("/api/health", response_model=HealthResponse)
+    async def get_health() -> HealthResponse:
+        """Liveness check."""
+        return await app.state.service.get_health()
+
+    @app.get("/api/games", response_model=GamesResponse)
+    async def get_games() -> GamesResponse:
+        """List virtual filesystem entries."""
+        return await app.state.service.get_games()
+
+    @app.post("/api/eject")
+    async def eject() -> dict:
+        """Unbind UDC, disconnect NBD, stop nbdkit."""
+        await run_in_threadpool(app.state.service.eject)
+        return {"status": "ejected"}
+
+    @app.exception_handler(Exception)
+    async def unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+        """Catch-all for unhandled errors — return structured 500."""
+        return JSONResponse(
+            status_code=500,
+            content=ErrorResponse(
+                error=ErrorBody(code="INTERNAL_ERROR", message=str(exc))
+            ).model_dump(),
+        )
 ```
 
 ### Server Lifecycle
 
 ```python
-class ApiServer:
-    """HTTP API server bound to localhost."""
+# server.py
+import uvicorn
 
-    def __init__(self, service, host="127.0.0.1", port=8080):
-        self.host = host
-        self.port = port
-        handler = partial(RemotePfsHandler, service)
-        self._server = http.server.HTTPServer((host, port), handler)
-
-    def start(self):
-        """Start serving in a daemon thread."""
-        import threading
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        """Graceful shutdown."""
-        self._server.shutdown()
-        self._thread.join(timeout=5)
+def run_api(service: "RemotePfsService", host: str = "127.0.0.1", port: int = 8080) -> None:
+    """Run FastAPI under uvicorn — blocks until shutdown."""
+    app = create_app(service)
+    uvicorn.run(app, host=host, port=port, log_level="info")
 ```
+
+### Concurrency Model
+
+- FastAPI handlers are `async def` — run on the event loop, non-blocking.
+- `run_in_threadpool()` bridges to sync code (TOML parsing, generation build,
+  nbdkit process management) without blocking the event loop.
+- Long-running reload sequence (UDC unbind + nbdkit restart + NBD reconnect +
+  warm + UDC rebind) runs in thread pool; `POST /api/config/reload` awaits it.
+- Concurrent reload attempts are guarded by `asyncio.Lock` — second attempt
+  returns 423 `RELOAD_IN_PROGRESS`.
 
 ## Security
 
@@ -366,5 +536,7 @@ class ApiServer:
 
 - DD-07: HTTP API on localhost
 - KB 05: exFAT filesystem details
-- Python `http.server` module: https://docs.python.org/3/library/http.server.html
+- FastAPI: https://fastapi.tiangolo.com/
+- Pydantic v2: https://docs.pydantic.dev/latest/
+- uvicorn: https://www.uvicorn.org/
 - TOML specification: https://toml.io/en/v1.0.0

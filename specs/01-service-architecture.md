@@ -394,7 +394,8 @@ Modules **not** required (removed from V0 design):
 | `nfs-common`              | NFS client utilities (mount.nfs)          |
 | `python3` (≥3.11)        | Application runtime                       |
 | `python3-tomli`           | TOML parsing (stdlib `tomllib` in ≥3.11)  |
-| `python3-aiohttp`         | HTTP API server (speculative; may use stdlib) |
+| `python3-fastapi`           | HTTP API framework (FastAPI + Pydantic)    |
+| `python3-uvicorn`           | ASGI server for FastAPI                    |
 
 ### 5.2 Python Dependencies
 

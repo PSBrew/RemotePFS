@@ -37,7 +37,7 @@ Design decisions document at `state/design-decisions.md`.
    - `nbdkit`, `nbdkit-plugin-python3`, `nbd-client`
    - `nfs-common` (NFS client)
    - `python3` (≥3.11), `python3-tomli` (or stdlib `tomllib`)
-   - `python3-aiohttp` (HTTP API)
+   - `python3-fastapi` (HTTP API), `python3-uvicorn` (ASGI server), `python3-pydantic` (models)
 
 2. Verify kernel modules available:
    - `nbd`, `nfs`, `nfsv4`, `dwc3` (or SBC-equivalent UDC driver)
@@ -207,7 +207,7 @@ Design decisions document at `state/design-decisions.md`.
    - Disconnect NBD
    - Stop nbdkit (optional: keep running for re-bind)
 
-6. **Server:** aiohttp on `localhost:8080` (Unix socket optional: `/run/remotepfs/api.sock`).
+6. **Server:** FastAPI + Pydantic + uvicorn on `localhost:8080` (Unix socket optional: `/run/remotepfs/api.sock`).
 
 **Deliverable:** HTTP API server, integrated with `remotepfs` CLI, config hot-reload via two-phase compile+activate.
 
