@@ -31,8 +31,8 @@ Follow these guidelines precisely when working in this repository.
 5. Git
    - Conventional Commits for all messages
 
-6. Read-only research archive
-   - `research/` is a frozen archive of the specification-phase knowledge base and state; update via the knowledge-base-add/index skills
+6. Knowledge base
+   - `knowledge-base/` holds the 14 specification-phase research articles plus `sources/` for related-project artifacts; add/update via the knowledge-base-add and knowledge-base-index skills
 
 ## Code Formatting and Linting
 

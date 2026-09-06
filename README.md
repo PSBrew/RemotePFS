@@ -25,10 +25,10 @@ Hardening. No implementation code yet.
 .
 ├── README.md               # This file
 ├── .gitignore
-├── .claude/                # Assistant rules and project memory
-│   ├── MEMORY.md           # Merged research + implementation memory
-│   └── rules/
-│       └── research-verification.md
+├── .claude/                # Assistant rules, skills, and project memory
+│   ├── MEMORY.md
+│   ├── rules/              # style, html-reporting, tmp-usage
+│   └── skills/             # knowledge-base-add, knowledge-base-index, fix-tests, html-reporting
 ├── specs/                  # Implementation specs (canonical)
 │   ├── 01-service-architecture.md
 │   ├── 02-protocol-choice.md
@@ -41,12 +41,9 @@ Hardening. No implementation code yet.
 ├── plans/
 │   ├── 01-project-roadmap.md
 │   └── 02-design-decisions.md
-├── research/               # Frozen research archive (read-only reference)
-│   ├── README.md           # Archive index
-│   ├── knowledge-base/     # 14 markdown research articles
-│   │   └── 00-index.md     # Topic index and cross-references
-│   └── state/
-│       └── PROGRESS.md     # Research-phase state tracker and decision log
+├── knowledge-base/         # 14 research articles (specification phase)
+│   ├── 00-index.md         # Topic index and cross-references
+│   └── sources/            # Related-project source artifacts (on demand)
 └── src/                    # Service code (created during implementation)
 ```
 

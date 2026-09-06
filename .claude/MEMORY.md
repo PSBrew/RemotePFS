@@ -24,11 +24,7 @@ this repository.
 
 - `specs/` - canonical implementation specs 01-08.
 - `plans/` - project roadmap (8 phases) and design decisions record.
-- `research/` - frozen research archive from the specification phase.
-- `knowledge-base/` - 14 markdown research articles (00-index through 13).
-  - `research/state/PROGRESS.md` - research-phase state tracker and decision log.
-  - `research/README.md` - archive index.
-  - HTML reports were removed; the `.md` files are authoritative.
+- `knowledge-base/` - 14 markdown research articles (00-index through 13) plus `sources/` for related-project artifacts.
 - `src/` - service code (created during implementation).
 - `.claude/` - assistant rules and this memory.
 
@@ -85,7 +81,7 @@ Full articles: `knowledge-base/<NN>-<slug>.md`. Index:
 - Keep each entry factual, short, and tied to concrete source links.
 - Prefer stable paths over temporary artifacts.
 - Update when findings change or new decisions are made.
-- Implementation progress tracked in `research/state/PROGRESS.md` (historical) and commit history.
+- Historical research-phase state lives in git history (research/state/PROGRESS.md, removed 2026-09-05); current decisions live in `plans/02-design-decisions.md` and this memory.
 
 ## Skills
 

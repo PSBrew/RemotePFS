@@ -117,13 +117,10 @@ When the source is a project or GitHub repository, index it fully:
 
 ### C) Web research topic flow
 
-1. Follow the research-verification rule at
-   `.claude/rules/research-verification.md`:
-   - at least one web search per major claim
-   - prefer primary sources (manufacturer datasheets, upstream repos, RFCs,
-     kernel documentation)
-   - cross-reference claims affecting critical design decisions
-   - mark unverifiable claims as `[UNVERIFIED]`
+1. Verify claims: at least one web search per major claim; prefer primary
+   sources (manufacturer datasheets, upstream repos, RFCs, kernel
+   documentation); cross-reference claims affecting critical design
+   decisions; mark unverifiable claims as `[UNVERIFIED]`.
 2. Cite upstream URLs directly in the article; no local artifacts needed
    unless the user asks.
 
