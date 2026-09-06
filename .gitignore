@@ -19,7 +19,9 @@ Thumbs.db
 
 # Artifacts
 *.log
-# Research archive guards
-research/knowledge-base/*.html
-research/reports/
+# Knowledge base guards
+knowledge-base/*.html
+knowledge-base/sources/
+# Legacy archive guards
+research/*.html
 tmp/

@@ -25,7 +25,7 @@ this repository.
 - `specs/` - canonical implementation specs 01-08.
 - `plans/` - project roadmap (8 phases) and design decisions record.
 - `research/` - frozen research archive from the specification phase.
-  - `research/knowledge-base/` - 14 markdown research articles (00-index through 13).
+- `knowledge-base/` - 14 markdown research articles (00-index through 13).
   - `research/state/PROGRESS.md` - research-phase state tracker and decision log.
   - `research/README.md` - archive index.
   - HTML reports were removed; the `.md` files are authoritative.
@@ -36,12 +36,12 @@ this repository.
 
 | # | Decision | Rationale | Source |
 |---|-----------|-----------|--------|
-| 1 | Python 3.11+ with `uv` | Matches MkPFS conventions; PSBrew org standard | research/knowledge-base/12-mkpfs-conventions.md |
-| 2 | Radxa Cubie A7S as target SBC | USB 3.1 Gen2 OTG (10 Gbps), GbE, up to 16 GB LPDDR5 | research/knowledge-base/03-radxa-cubie-a7s.md |
-| 3 | Synology DS224+ as NAS backend | 2x 1GbE bonded, J4125 with AES-NI, SMB 3.1.1 + NFS v4.1 | research/knowledge-base/04-synology-nas.md |
-| 4 | exFAT USB gadget via Linux configfs | mass_storage function presents as USB flash drive to PS5 | research/knowledge-base/06-usb-otg-gadget.md |
-| 5 | 64 KB exFAT cluster size, 512 B sectors | Matches ShadowMountPlus LVD defaults | research/knowledge-base/01-shadowmountplus.md |
-| 6 | BSP kernel (Linux 6.6) for A733 | No mainline support as of Sep 2026 | research/knowledge-base/03-radxa-cubie-a7s.md |
+| 1 | Python 3.11+ with `uv` | Matches MkPFS conventions; PSBrew org standard | knowledge-base/12-mkpfs-conventions.md |
+| 2 | Radxa Cubie A7S as target SBC | USB 3.1 Gen2 OTG (10 Gbps), GbE, up to 16 GB LPDDR5 | knowledge-base/03-radxa-cubie-a7s.md |
+| 3 | Synology DS224+ as NAS backend | 2x 1GbE bonded, J4125 with AES-NI, SMB 3.1.1 + NFS v4.1 | knowledge-base/04-synology-nas.md |
+| 4 | exFAT USB gadget via Linux configfs | mass_storage function presents as USB flash drive to PS5 | knowledge-base/06-usb-otg-gadget.md |
+| 5 | 64 KB exFAT cluster size, 512 B sectors | Matches ShadowMountPlus LVD defaults | knowledge-base/01-shadowmountplus.md |
+| 6 | BSP kernel (Linux 6.6) for A733 | No mainline support as of Sep 2026 | knowledge-base/03-radxa-cubie-a7s.md |
 | 7 | NBD over FUSE | NBD userspace server over Unix socket to /dev/nbd0 then g_mass_storage; loop-on-FUSE unreliable | specs/02-protocol-choice.md |
 | 8 | nbdkit with Python plugin | Only pread() and extents(); filters blocksize + cache | specs/06-nbd-server.md |
 | 9 | Triple read-only enforcement | nbdkit --readonly + nbd-client -r + g_mass_storage ro=1 | specs/05-security-model.md |
@@ -77,8 +77,8 @@ on the exFAT device.
 - 12 MkPFS conventions: uv, ruff (119), pytest, Google docstrings, Conventional Commits.
 - 13 Future features: alt transports, FUSE game-folder mounting, multi-network load balancing.
 
-Full articles: `research/knowledge-base/<NN>-<slug>.md`. Index:
-`research/knowledge-base/00-index.md`.
+Full articles: `knowledge-base/<NN>-<slug>.md`. Index:
+`knowledge-base/00-index.md`.
 
 ## Update Standard
 
@@ -89,9 +89,9 @@ Full articles: `research/knowledge-base/<NN>-<slug>.md`. Index:
 
 ## Skills
 
-- knowledge-base-add — add or update a KB article under `research/knowledge-base/` and update `00-index.md`
+- knowledge-base-add — add or update a KB article under `knowledge-base/` and update `00-index.md`
   - Usage: `knowledge-base-add title="<Title>" sources="URL1,URL2"`
-  - Output: `research/knowledge-base/{NN}-{slug}.md`, index entry in `00-index.md`, memory bullet
+  - Output: `knowledge-base/{NN}-{slug}.md`, index entry in `00-index.md`, memory bullet
 - knowledge-base-index — rebuild/verify the KB index and memory entries from disk
   - Usage: `knowledge-base-index`
   - Verifies missing/extra entries, numbering, links, and the cross-ref matrix

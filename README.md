@@ -55,11 +55,11 @@ Start points:
 - Implementation overview: `specs/01-service-architecture.md`
 - Roadmap and phases: `plans/01-project-roadmap.md`
 - Why decisions were made: `plans/02-design-decisions.md`
-- Background research: `research/knowledge-base/00-index.md`
+- Background research: `knowledge-base/00-index.md`
 
 ## Conventions
 
-- Follow the PSBrew/MkPFS coding style: see `research/knowledge-base/12-mkpfs-conventions.md`.
+- Follow the PSBrew/MkPFS coding style: see `knowledge-base/12-mkpfs-conventions.md`.
 - Use Conventional Commits for git messages.
 - Python 3.11+, uv, Ruff (line-length=119), pytest, Google docstrings.
 - No em dashes. `PFS` capitalization follows mkpfs rules.

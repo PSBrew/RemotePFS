@@ -1,16 +1,16 @@
-# {Display Name} — Related Source Deep Summary
+# {Display Name} — Knowledge Base Article Scaffold
 
-> Use this template as a scaffold. Remove sections that are truly irrelevant, but keep the report technically deep when the source is implementation-heavy.
+> Use this template as a scaffold when authoring a knowledge-base article, especially for related-project ingestion. Remove sections that are truly irrelevant, but keep the article technically deep when the source is implementation-heavy.
 
 ## Source Identity
 
 - Canonical name: {display_name}
-- Type: {git|docs|mixed}
+- Type: {web|git|docs|mixed}
 - Upstream source(s):
   - {url_1}
   - {url_2}
-- Local artifact folder: [related-projects/{raw_source}](related-projects/{raw_source})
-- Indexed on: {YYYY-MM-DD}
+- Local source artifacts (if any): [knowledge-base/sources/{slug}/](sources/{slug}/)
+- Researched on: {YYYY-MM-DD}
 
 ## Executive Summary
 
@@ -44,14 +44,14 @@
 ## Project Structure
 
 ```text
-related-projects/{raw_source}/
+knowledge-base/sources/{slug}/
 ├── ...
 └── ...
 ```
 
 - High-value directories/files:
-  - [related-projects/{raw_source}/{path_1}](related-projects/{raw_source}/{path_1})
-  - [related-projects/{raw_source}/{path_2}](related-projects/{raw_source}/{path_2})
+  - [sources/{slug}/{path_1}](sources/{slug}/{path_1})
+  - [sources/{slug}/{path_2}](sources/{slug}/{path_2})
 
 ## Supported Formats / Variants
 
@@ -63,8 +63,8 @@ related-projects/{raw_source}/
 ## Structure and Modules
 
 - Key modules/pages:
-  - [{module_or_page_1}](related-projects/{raw_source}/{path_1})
-  - [{module_or_page_2}](related-projects/{raw_source}/{path_2})
+  - [{module_or_page_1}](sources/{slug}/{path_1})
+  - [{module_or_page_2}](sources/{slug}/{path_2})
 
 ## Architecture / Flow
 
@@ -93,10 +93,10 @@ related-projects/{raw_source}/
 ## Technical Findings
 
 1. {finding_1}
-  - Evidence: [{local_source_link_1}](related-projects/{raw_source}/{evidence_path_1})
+  - Evidence: [{local_source_link_1}](sources/{slug}/{evidence_path_1})
   - Upstream: {upstream_link_1}
 2. {finding_2}
-  - Evidence: [{local_source_link_2}](related-projects/{raw_source}/{evidence_path_2})
+  - Evidence: [{local_source_link_2}](sources/{slug}/{evidence_path_2})
   - Upstream: {upstream_link_2}
 
 ## Compatibility and Behavior Notes
@@ -122,16 +122,16 @@ related-projects/{raw_source}/
 
 ## Source-Centric Guardrail
 
-- Avoid referencing the parent repository unless the user explicitly asked for integration notes.
-- Avoid pulling facts from other related-project reports unless the user explicitly asked for comparison.
+- Avoid referencing the RemotePFS implementation unless the user explicitly asked for integration notes.
+- Avoid pulling facts from other knowledge-base articles unless the user explicitly asked for comparison.
 - Mark gaps as unknown when this source does not evidence them directly.
 
 ## Source Index
 
-- Local folder root: [related-projects/{raw_source}](related-projects/{raw_source})
+- Local folder root: [sources/{slug}/](sources/{slug}/)
 - Key local sources:
-  - [related-projects/{raw_source}/{path_1}](related-projects/{raw_source}/{path_1})
-  - [related-projects/{raw_source}/{path_2}](related-projects/{raw_source}/{path_2})
+  - [sources/{slug}/{path_1}](sources/{slug}/{path_1})
+  - [sources/{slug}/{path_2}](sources/{slug}/{path_2})
 - Upstream references:
   - {upstream_reference_1}
   - {upstream_reference_2}

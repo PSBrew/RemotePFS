@@ -8,7 +8,7 @@
 - Start here to find the right topic fast.
 - For details, open `<NN>-<slug>.md` in this directory.
 - HTML reports were removed; the `.md` files in this directory are authoritative.
-- For implementation specs, open `../../specs/<NN>-<slug>.md` (from repo root: `specs/`).
+- For implementation specs, open `../specs/<NN>-<slug>.md` (from repo root: `specs/`).
 
 ---
 

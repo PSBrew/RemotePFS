@@ -71,7 +71,7 @@ mkpfs create --path ./input --output ./game.ffpfs
 - Use the terminal icon (⌨️) for the Command Overview heading.
 
 ## Links and documentation references
-- Prefer in-repo docs (`specs/`, `research/knowledge-base/`) until a published site exists; link relative paths.
+- Prefer in-repo docs (`specs/`, `knowledge-base/`) until a published site exists; link relative paths.
 ## Style of writing and micro-rules
 - Keep sentences short (<= 24 words where practical).
 - Use code font (`code`) for file names and command tokens.

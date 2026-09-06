@@ -45,16 +45,15 @@ Follow these guidelines precisely when working in this repository.
 
 - `.claude/` contains rules, memory, settings, and skills
 - Skills available:
-  - `knowledge-base-add`: add/update KB article in `research/knowledge-base/`
+  - `knowledge-base-add`: add/update KB article in `knowledge-base/`
   - `knowledge-base-index`: rebuild/verify `00-index.md` and MEMORY index
-  - `related-project-add`: ingest external related projects into `related-projects/`
   - `html-reporting`: produce companion HTML under `./tmp/`
   - `fix-tests`: run checks and fix failing tests before push
 
 ## Project Conventions
 
 - Python 3.11+, uv, Ruff (line-length=119), pytest, Google docstrings
-- No em dashes; `PFS` capitalization per conventions in `research/knowledge-base/12-mkpfs-conventions.md`
+- No em dashes; `PFS` capitalization per conventions in `knowledge-base/12-mkpfs-conventions.md`
 - Specs are canonical: `specs/01-08`
 - Plans: `plans/01-project-roadmap.md`, `plans/02-design-decisions.md`
 - Service code will live under `src/` with FastAPI + Pydantic v2 + uvicorn

@@ -1,10 +1,10 @@
 # Source Manifest — {Display Name}
 
-Use this file inside `related-projects/{raw_source}/` when the source is documentation/wiki/html/md or mixed.
+Use this file inside `knowledge-base/sources/{slug}/` when the source is a git repo snapshot, documentation/wiki/html/md, or mixed.
 
 ## Metadata
 
-- Raw source slug: {raw_source}
+- Raw source slug: {slug}
 - Canonical source URL: {canonical_url}
 - Indexed on: {YYYY-MM-DD}
 - Topic focus: {topic_focus}
@@ -24,7 +24,7 @@ Use this file inside `related-projects/{raw_source}/` when the source is documen
 
 ## Acquisition Notes
 
-- Method: {manual_fetch|tool_fetch|mixed}
+- Method: {manual_fetch|tool_fetch|git_clone|mixed}
 - Known gaps:
   - {gap_1}
   - {gap_2}

@@ -1,6 +1,6 @@
 ---
 name: knowledge-base-index
-description: Rebuild and verify research/knowledge-base/00-index.md and the memory topic index, keeping entries and cross-references in sync with actual articles on disk.
+description: Rebuild and verify knowledge-base/00-index.md and the memory topic index, keeping entries and cross-references in sync with actual articles on disk.
 context: fork
 ---
 
@@ -11,7 +11,7 @@ RemotePFS knowledge base index.
 
 ## What It Maintains
 
-1. `research/knowledge-base/00-index.md`:
+1. `knowledge-base/00-index.md`:
    - One `## {NN} - {Display Name}` section per article.
    - Each section has: What, Relevance, Gotchas, Upstream, Internal.
    - A Cross-Reference Matrix (Topic, Depends On, Informs) covering all
@@ -21,7 +21,7 @@ RemotePFS knowledge base index.
 
 ## Rebuild Procedure
 
-1. List articles on disk: `research/knowledge-base/{NN}-{slug}.md`.
+1. List articles on disk: `knowledge-base/{NN}-{slug}.md` (exclude `00-index.md` and `sources/`).
 2. Detect gaps:
    - Articles on disk missing from `00-index.md`.
    - Index entries with no article on disk (stale; flag, do not silently
@@ -48,8 +48,9 @@ After rebuild, verify:
 3. Every matrix row has a matching index section.
 4. Memory bullet count matches article count.
 5. No HTML file references remain (`.md` is authoritative).
-6. Links to specs use `../../specs/` relative paths from
-   `research/knowledge-base/` (repo-root form: `specs/`).
+6. Links to specs use `../specs/` relative paths from `knowledge-base/`
+   (repo-root form: `specs/`). Related-project articles may link to
+   `sources/{slug}/` artifacts.
 
 ## Conventions
 
