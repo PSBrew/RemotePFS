@@ -86,3 +86,16 @@ Full articles: `research/knowledge-base/<NN>-<slug>.md`. Index:
 - Prefer stable paths over temporary artifacts.
 - Update when findings change or new decisions are made.
 - Implementation progress tracked in `research/state/PROGRESS.md` (historical) and commit history.
+
+## Skills
+
+- knowledge-base-add
+  - When: add or update a research article under `research/knowledge-base/`
+  - Quickstart:
+    - Topic-focused: “Run knowledge-base-add for ‘iSCSI vs NBD for LAN’ with sources: <urls>”
+    - Output: `research/knowledge-base/{NN}-{slug}.md`, index entry in `00-index.md`, memory bullet
+- knowledge-base-index
+  - When: rebuild/verify the KB index and memory entries from disk
+  - Quickstart:
+    - “Run knowledge-base-index to resync 00-index.md and MEMORY”
+    - Verifies missing/extra entries, numbering, links, and the cross-ref matrix
