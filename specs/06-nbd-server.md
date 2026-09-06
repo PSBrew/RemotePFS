@@ -234,8 +234,8 @@ nbdkit \
     --filter=blocksize \
     --filter=cache \
     python remotepfs_nbd.py \
-    image_size=<computed> \
-    mapper_state=<path>
+    image_size=2199023255552 \
+    mapper_state=/run/remotepfs/mapper.state
 ```
 | Flag | Value | Purpose |
 |------|-------|---------|

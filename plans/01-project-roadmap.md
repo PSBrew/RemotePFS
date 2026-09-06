@@ -140,8 +140,8 @@ Design decisions document at `plans/02-design-decisions.md`.
        --filter=blocksize \
        --filter=cache \
        python /usr/lib/remotepfs/remotepfs_nbd.py \
-       image_size=<computed> \
-       mapper_state=<path> &
+       image_size=2199023255552 \
+       mapper_state=/run/remotepfs/mapper.state &
    nbd-client -U /run/remotepfs/nbd.sock -r /dev/nbd0
    ```
 
@@ -466,8 +466,8 @@ Full startup sequence from cold boot to PS5 recognition (ref: spec 06):
           --filter=blocksize \
           --filter=cache \
           python /usr/lib/remotepfs/remotepfs_nbd.py \
-          image_size=<computed> \
-          mapper_state=<path>
+          image_size=2199023255552 \
+          mapper_state=/run/remotepfs/mapper.state
 6.  Connect NBD client:
       nbd-client -U /run/remotepfs/nbd.sock -r /dev/nbd0
 7.  Tune block device:

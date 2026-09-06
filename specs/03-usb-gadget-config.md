@@ -75,12 +75,14 @@ nbdkit instance:
 
 ```bash
 # Start nbdkit with the Python plugin (see spec 06)
+IMAGE_SIZE_BYTES=2199023255552
+MAPPER_STATE="/run/remotepfs/mapper.state"
 nbdkit --readonly -U /run/remotepfs/nbd.sock \
        --filter=blocksize \
        --filter=cache \
        python remotepfs_nbd.py \
-       image_size=<computed> \
-       mapper_state=<path> &
+       image_size="$IMAGE_SIZE_BYTES" \
+       mapper_state="$MAPPER_STATE" &
 
 # Connect kernel NBD client to the local Unix socket
 nbd-client -U /run/remotepfs/nbd.sock -r /dev/nbd0
@@ -656,6 +658,8 @@ set -euo pipefail
 GADGET_DIR="/sys/kernel/config/usb_gadget/remotepfs"
 NBDKIT_SOCK="/run/remotepfs/nbd.sock"
 CONFIG_TOML="/etc/remotepfs/remotepfs.conf"
+IMAGE_SIZE_BYTES=2199023255552  # Example: 2 TiB (adjust to actual image size)
+MAPPER_STATE="/run/remotepfs/mapper.state"
 
 echo "=== RemotePFS USB Gadget Setup ==="
 
@@ -670,8 +674,8 @@ if ! pgrep -f nbdkit > /dev/null; then
            --filter=blocksize \
            --filter=cache \
            python /usr/lib/remotepfs/remotepfs_nbd.py \
-           image_size=<computed> \
-           mapper_state=<path> &
+           image_size="$IMAGE_SIZE_BYTES" \
+           mapper_state="$MAPPER_STATE" &
     sleep 2
 fi
 

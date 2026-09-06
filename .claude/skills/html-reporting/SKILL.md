@@ -1,12 +1,12 @@
 ---
 name: html-reporting
-description: Generate a polished companion HTML report for detailed answers, checks, and verification outputs.
+description: Generate a polished HTML report for detailed answers, checks, and verification outputs. Use this skill whenever the user requests a detailed answer, research, verification, or any "check" or "report" about code, tests, or project state.
 context: fork
 ---
 
 # HTML Reporting Skill
 
-Use this skill whenever the user requests a detailed answer, research, verification, or any "check" or "report" about code, tests, or project state. The skill produces two artifacts:
+The skill produces two artifacts:
 
 1. A normal chat response (always required).
 2. A companion, self-contained HTML5 report saved under ./tmp/ with a clickable path included in the chat response.
