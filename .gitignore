@@ -19,4 +19,7 @@ Thumbs.db
 
 # Artifacts
 *.log
+# Research archive guards
+research/knowledge-base/*.html
+research/reports/
 tmp/
