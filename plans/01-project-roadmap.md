@@ -15,11 +15,11 @@ This roadmap implements the architecture defined in:
 | 01   | Service Architecture                       | NBD + virtual exFAT + config-driven layout       |
 | 02   | Protocol Choice                            | NFS v4.1 for NAS, NBD over AF_UNIX for local     |
 | 03   | USB Gadget Configuration                   | g_mass_storage with /dev/nbd0, ConfigFS setup    |
-| 04   | Config System & Virtual exFAT              | TOML parsing, generation compilation             |
-| 05   | NBD Server (nbdkit Plugin)                 | Python plugin, filter chain, bring-up script     |
-| 06   | SectorMapper                               | LBA → (NFS fd, file_offset) mapping              |
-| 07   | HTTP API                                   | Config compile/activate, status, eject           |
-| 08   | Metadata Preloading                        | pread() warming of exFAT metadata before UDC bind|
+| 04   | Caching Layer                              | Two-tier: nbdkit cache + Linux page cache        |
+| 05   | Security Model                             | Host OS hardening, socket permissions, read-only |
+| 06   | NBD Server (nbdkit Python Plugin)          | Python plugin, filter chain, bring-up script     |
+| 07   | Config System                              | TOML schema, validation, mount mapping           |
+| 08   | HTTP API                                   | Two-phase compile/activate; PUT/reload wrappers; status/games/health/eject  |
 
 Design decisions document at `plans/02-design-decisions.md`.
 
@@ -45,7 +45,7 @@ Design decisions document at `plans/02-design-decisions.md`.
 
 3. Mount NFS exports (or configure fstab):
    ```bash
-   mount -t nfs4 -o ro,hard,nconnect=2,rsize=1048576,noatime \
+   mount -t nfs4 -o ro,hard,nconnect=2,rsize=1048576,noatime,nosuid,nodev,noexec \
        <nas_ip>:/exports/games /mnt/nfs/games
    ```
 
@@ -67,20 +67,20 @@ Design decisions document at `plans/02-design-decisions.md`.
 
 **Goal:** Parse TOML config, validate, compile into virtual exFAT metadata structures.
 
-**Spec reference:** [04 — Config System & Virtual exFAT](04-config-system.md), [06 — SectorMapper](06-sector-mapper.md).
+**Spec reference:** [07 — Config System](../specs/07-config-system.md), [06 — NBD Server](../specs/06-nbd-server.md).
 
 **Tasks:**
 
-1. **TOML config schema** (`/etc/remotepfs/config.toml`):
-   - `[general]`: label, serial, UUID, sector_size (512), cluster_size, total_size
-   - `[[nfs_servers]]`: name, host, export, mount_options
-   - `[[games]]`: virtual_path, label, nfs_server, source_dir, optional sfo/icon files
+1. **TOML config schema** (`/etc/remotepfs/remotepfs.conf`):
+   - `[global]`: image_size_gib, cluster_size_kib (locked 64), label (uppercase, 11 chars), oem_name
+   - `[[sources]]`: name, server, export, mount_point, nfs_options
+   - `[[entries]]`: virtual_path (flat, no `/`), source (under mount_point), type ("file"|"directory")
 
 2. **Config compiler** (`config_compiler.py`):
    - Validate TOML syntax and field constraints
    - Verify NFS source directories exist and are accessible
-   - Build directory tree from `[[games]]` entries
-   - Compute `param.sfo` expected path, verify existence
+   - Build directory tree from `[[entries]]`
+   - Verify `param.sfo` exists in each game directory (probe, not required)
    - Assign file IDs, compute cluster chains
 
 3. **Virtual exFAT builder** (`sector_mapper.py`):
@@ -110,29 +110,38 @@ Design decisions document at `plans/02-design-decisions.md`.
 
 **Goal:** nbdkit Python plugin serves virtual exFAT as a local block device over AF_UNIX socket.
 
-**Spec reference:** [05 — NBD Server](05-nbd-server.md), [02 — Protocol Choice (Decision B)](02-protocol-choice.md).
+**Spec reference:** [06 — NBD Server](../specs/06-nbd-server.md), [02 — Protocol Choice (Decision B)](../specs/02-protocol-choice.md).
 
 **Tasks:**
 
-1. **Python plugin** (`plugin.py`):
-   - `pread(h, count, offset)`: Delegate to SectorMapper
+1. **Python plugin** (`remotepfs_nbd.py`):
+   - `pread(h, buf, offset, flags)`: Delegate to SectorMapper
    - `extents(h, count, offset, flags)`: Query SectorMapper for hole/zero regions
    - `get_size(h)`: Return total virtual exFAT size
-   - `thread_model()`: Return `NBDKIT_THREAD_MODEL_PARALLEL`
+   - `thread_model()`: Return `nbdkit.THREAD_MODEL_SERIALIZE_REQUESTS`
    - `cache` (bool): Enabled
    - Load active generation on startup
 
 2. **Filter chain** (order matters):
-   - `--filter=cache`: 1 GiB COW LRU cache. `cache-min-block=262144` (256K)
-   - `--filter=blocksize`: Normalize to 512–1M range, `minblock=512 maxdata=1048576 maxlen=4M`
+   - `--filter=blocksize`: Sector-align and cap request size, `minblock=512 maxdata=65536 maxlen=4M`
+   - `--filter=cache`: Temp-file cache (`$TMPDIR`), `cache-on-read=true`, bounded by `cache-max-size`; LRU
 
 3. **Bring-up script:**
    ```bash
    modprobe nbd
-   nbdkit -U /run/remotepfs/nbd.sock \
+   nbdkit \
+       -U /run/remotepfs/nbd.sock \
+       --pidfile /run/remotepfs/nbdkit.pid \
+       --unix-mode=0600 \
+       --exit-with-parent \
+       --threads 1 \
+       --max-request 98304 \
+       --readonly \
        --filter=blocksize \
        --filter=cache \
-       python /usr/lib/remotepfs/plugin.py &
+       python /usr/lib/remotepfs/remotepfs_nbd.py \
+       image_size=<computed> \
+       mapper_state=<path> &
    nbd-client -U /run/remotepfs/nbd.sock -r /dev/nbd0
    ```
 
@@ -170,7 +179,7 @@ Design decisions document at `plans/02-design-decisions.md`.
 
 **Goal:** REST API on localhost for config management, status monitoring, and device eject.
 
-**Spec reference:** [07 — HTTP API](07-http-api.md).
+**Spec reference:** [08 — HTTP API](../specs/08-http-api.md).
 
 **Tasks:**
 
@@ -186,7 +195,7 @@ Design decisions document at `plans/02-design-decisions.md`.
 2. **`POST /api/config/compile`:**
    - Accept TOML config in request body
    - Validate + compile (Phase 2)
-   - Return `{ generation_id, game_count, total_size, warnings[], errors[] }`
+   - Return `{ generation_id, entry_count, size_bytes, warnings[], errors[] }`
 
 3. **`POST /api/config/activate`:**
    - Accept `{ generation_id }`
@@ -219,7 +228,7 @@ Design decisions document at `plans/02-design-decisions.md`.
 
 **Goal:** Bind `/dev/nbd0` to `g_mass_storage` USB gadget, PS5 detects as extended storage.
 
-**Spec reference:** [03 — USB Gadget Configuration](03-usb-gadget-config.md).
+**Spec reference:** [03 — USB Gadget Configuration](../specs/03-usb-gadget-config.md).
 
 **Tasks:**
 
@@ -262,7 +271,7 @@ Design decisions document at `plans/02-design-decisions.md`.
 
 **Goal:** Warm nbdkit cache with critical exFAT metadata before UDC bind to eliminate NFS round-trips during PS5's initial partition scan.
 
-**Spec reference:** [08 — Metadata Preloading](08-metadata-preloading.md).
+**Spec reference:** [04 — Caching Layer](../specs/04-caching-layer.md) (Metadata Preloading §4).
 
 **Tasks:**
 
@@ -365,7 +374,7 @@ Design decisions document at `plans/02-design-decisions.md`.
    - `remotepfs serve`: Full startup with progress output
    - `remotepfs shutdown`: Graceful teardown
    - `remotepfs status`: Human-readable status
-   - `remotepfs compile <config.toml>`: Offline config validation
+   - `remotepfs compile <remotepfs.conf>`: Offline config validation
 
 4. **README and user docs:**
    - Hardware prerequisites (SBC model, USB cable, power)
@@ -424,7 +433,7 @@ Design decisions document at `plans/02-design-decisions.md`.
 | Deliverable                        | Phase | Format                                                |
 |------------------------------------|-------|-------------------------------------------------------|
 | Config compiler + SectorMapper     | 2     | Python modules (`config_compiler.py`, `sector_mapper.py`) |
-| nbdkit Python plugin               | 3     | Python (`plugin.py`)                                  |
+| nbdkit Python plugin               | 3     | Python (`remotepfs_nbd.py`)                           |
 | nbdkit bring-up script + systemd   | 3     | Bash + systemd unit (`remotepfs.service`)             |
 | HTTP API server                    | 4     | Python (`api_server.py`)                              |
 | USB gadget manager                 | 5     | Python (`gadget_manager.py`)                          |
@@ -443,13 +452,22 @@ Full startup sequence from cold boot to PS5 recognition (ref: spec 06):
 ```
 1.  modprobe nbd g_mass_storage
 2.  Mount NFS exports (fstab or manual)
-3.  Load config from /etc/remotepfs/config.toml
+3.  Load config from /etc/remotepfs/remotepfs.conf
 4.  Compile config → SectorMapper (build exFAT metadata in memory)
 5.  Start nbdkit:
-      nbdkit -U /run/remotepfs/nbd.sock \
-          --filter=blocksize minblock=512 maxdata=1048576 maxlen=4M \
-          --filter=cache cache-min-block=262144 cache-max-size=1G \
-          python /usr/lib/remotepfs/plugin.py
+      nbdkit \
+          -U /run/remotepfs/nbd.sock \
+          --pidfile /run/remotepfs/nbdkit.pid \
+          --unix-mode=0600 \
+          --exit-with-parent \
+          --threads 1 \
+          --max-request 98304 \
+          --readonly \
+          --filter=blocksize \
+          --filter=cache \
+          python /usr/lib/remotepfs/remotepfs_nbd.py \
+          image_size=<computed> \
+          mapper_state=<path>
 6.  Connect NBD client:
       nbd-client -U /run/remotepfs/nbd.sock -r /dev/nbd0
 7.  Tune block device:

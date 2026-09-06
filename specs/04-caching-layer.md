@@ -1,7 +1,7 @@
 # 04 — Caching Layer
 
 > **RemotePFS context:** SBC (4 GB RAM) caches virtual exFAT reads across two tiers:
-> L1 in-process nbdkit cache filter, L2 kernel page cache on NFS file reads.
+> L1 nbdkit cache filter (temp file in $TMPDIR), L2 kernel page cache on NFS file reads.
 > Metadata preloading warms critical sectors before PS5 USB gadget activation.
 
 ---
@@ -22,20 +22,22 @@ g_mass_storage  (file=/dev/nbd0, ro=1)
 nbdkit --filter=blocksize --filter=cache
     │
     │  ┌─────────────────────────────────────┐
-    │  │  L1: nbdkit cache filter           │
-    │  │  In-process, 1 GiB RAM, LRU        │
-    │  │  cache-on-read=true                │
-    │  │  COW semantics (writeback=NONE)     │
-    │  │  cache-min-block=262144 (256 KiB)  │
-    │  └──────────────┬──────────────────────┘
-    │                 │ cache miss
-    │                 ▼
-    │  ┌─────────────────────────────────────┐
     │  │  blocksize filter (minblock=512,   │
     │  │  maxdata=65536)                    │
-    │  │  Aligns reads, splits oversized    │
+    │  │  Aligns reads, splits oversized.   │
+    │  │  —                                                      │
+    │  │  (requests aligned to 512 B, fragmented if >64 KiB)     │
     │  └──────────────┬──────────────────────┘
     │                 │
+    │                 ▼
+    │  ┌─────────────────────────────────────┐
+    │  │  L1: nbdkit cache filter           │
+    │  │  Temp-file cache (location: $TMPDIR)                 │
+    │  │  cache-on-read=true                                 │
+    │  │  Capacity bounded by cache-max-size; LRU eviction   │
+    │  │  (see man nbdkit-cache-filter)                      │
+    │  └──────────────┬──────────────────────┘
+    │                 │ cache miss
     │                 ▼
     │  ┌─────────────────────────────────────┐
     │  │  Python plugin → SectorMapper      │
@@ -76,70 +78,57 @@ Two-tier design eliminates redundant work:
 ```bash
 nbdkit \
     --unix /run/remotepfs/nbd.sock \
+    --readonly \
     --filter=blocksize \
     --filter=cache \
-    blocksize-minblock=512 \
-    blocksize-maxdata=65536 \
-    cache-min-block=262144 \
+    python /usr/lib/remotepfs/remotepfs_nbd.py \
+    minblock=512 \
+    maxdata=65536 \
+    cache-min-block-size=262144 \
     cache-max-size=1073741824 \
-    cache-on-read=true \
-    python /usr/lib/remotepfs/plugin.py
+    cache-on-read=true
 ```
 
-**Filter stacking order (critical):** nbdkit applies filters left-to-right,
-innermost first:
+**Filter stacking order:** nbdkit applies filters left-to-right, outermost first:
 
 ```
-client → cache filter → blocksize filter → python plugin
+client → blocksize filter → cache filter → python plugin
 ```
 
-- `blocksize` (innermost) enforces `minblock=512`, `maxdata=65536` (64 KiB).
-  Sub-512-byte reads are padded; oversized reads are split into 64 KiB chunks.
-- `cache` (outermost) receives aligned, bounded requests from blocksize.
-  This improves cache hit rate — the same LBA range always arrives at the
-  same size and alignment, so cache blocks map predictably.
+- **blocksize** (outermost): `minblock=512` rounds reads to 512-byte alignment;
+  `maxdata=65536` (64 KiB) fragments larger reads into multiple plugin requests.
+  All requests reaching the cache are at least sector-aligned and at most 64 KiB.
 
 | Parameter               | Value          | Purpose                                           |
 |-------------------------|----------------|---------------------------------------------------|
-| `blocksize-minblock`    | `512`          | Minimum block size = sector size. All reads padded to 512-byte boundary. |
-| `blocksize-maxdata`     | `65536`        | Maximum read size 64 KiB. Larger reads from PS5 (up to 128 KiB SCSI) are split into two 64 KiB NBD requests. |
-| `cache-min-block`       | `262144`       | Minimum cache block size 256 KiB. Reads smaller than this are promoted into cache. Large sequential reads bypass L1. |
-| `cache-max-size`        | `1073741824`   | 1 GiB total cache capacity. LRU eviction when full. |
-| `cache-on-read`         | `true`         | Populate cache on read miss. Required for metadata preloading — pread() calls from nbdsh warm-up populate the cache. |
-| `cache-writeback`       | N/A (no writes)| Write-back disabled. Device is read-only (ro=1 on gadget). No dirty pages to reconcile. |
+| `minblock`              | `512`          | Minimum block size and alignment. Reads padded to 512-byte boundary. Power of two, ≤ 64K. |
+| `maxdata`               | `65536`        | Maximum read size 64 KiB. Larger reads are fragmented. Integer multiple of minblock. |
+| `cache-min-block-size`  | `262144`       | Minimum block size used by the cache (256 KiB). Power of 2, ≥ 4096. Default is 64K. Larger values reduce metadata overhead at the cost of spatial waste. |
+| `cache-max-size`        | `1073741824`   | 1 GiB cache capacity limit. When reached, blocks are evicted per high/low thresholds (95%/80%) until below the low threshold. Least recently used blocks discarded first. |
+| `cache-on-read`         | `true`         | Populate cache on read miss. Any time a block is read from the plugin, it is saved in the cache (if space permits). |
 
 ### 2.2 Cache Behavior
 
-**Block granularity:** The cache filter divides the 1 GiB pool into 256 KiB blocks.
-Reads smaller than 256 KiB are rounded up to the next block boundary and cached.
-Reads 256 KiB or larger bypass the cache (`cache-min-block` acts as a promotion
-threshold, not a maximum).
+With `cache-on-read=true`, every read from the plugin is stored in the cache
+temp file. The cache divides data into blocks of at least `cache-min-block-size`
+(256 KiB). When the cache reaches `cache-max-size` (1 GiB), eviction triggers
+at the high threshold (95% = 972 MiB) and continues until below the low
+threshold (80% = 819 MiB). Least recently used blocks are discarded first.
 
-**Read path (cache outermost):**
-1. NBD request arrives from nbd.ko — already padded to ≥512 bytes by
-   blocksize-minblock on previous rounds or by nbd.ko's block layer.
-2. Cache filter checks LRU for `[offset, offset+count)`.
-3. Hit: return cached bytes directly. Zero blocksize/plugin overhead.
-4. Miss, sub-256K: forward to blocksize → plugin. Cache result on return.
-5. Miss, 256K+: forward to blocksize → plugin. Do NOT cache.
+The default `cache=writeback` mode is harmless: the device is read-only
+(`--readonly` on nbdkit, `ro=1` on the USB gadget), so no writes ever reach
+the cache and no dirty pages exist.
 
-**Rationale for filter stack order:** If cache were innermost (before blocksize),
-the PS5 could issue two different-sized reads for the same data (e.g. 512-byte
-sector read vs 4 KiB directory read spanning the same sector). The cache would
-see different `(offset, count)` tuples and potentially store duplicate data or
-miss. With blocksize first, every request to the cache is aligned to 512-byte
-boundaries and bounded to 64 KiB — same data = same cache request = cache hit.
+**Rationale for blocksize-first:** Placing blocksize before cache ensures that
+all requests arriving at the cache are sector-aligned (minblock=512) and any
+larger client reads are fragmented to 64 KiB chunks (maxdata). Avoid assuming
+specific cache entry sizing; see man nbdkit-cache-filter.
 
-**Rationale for 256 KiB threshold:** exFAT metadata reads (VBR, FAT, directory
-entries) are small (512–4096 bytes typical) and repeated frequently during PS5
-filesystem scans. Large sequential game data reads (64 KiB+ after blocksize)
-would evict useful metadata from the 1 GiB pool with no benefit, since
-sequential reads rarely repeat the same data within a session.
-
-The Python plugin implements `extents()` (see spec 02, section 3). The
-SectorMapper reports unallocated regions as `NBDKIT_EXTENT_ZERO`. nbdkit
-propagates these extent flags to the kernel NBD client, which skips reading
-those sectors entirely.
+**Read path (blocksize → cache → plugin):**
+1. NBD request arrives from nbd.ko.
+2. Blocksize filter: rounds to 512-byte boundary; fragments if >64 KiB.
+3. Cache filter: check for cached copy. If hit, return.
+4. Miss: forward to Python plugin. Cache the result on return (space permitting).
 
 This is critical for the virtual exFAT: Region 2 (file data clusters) is sparse.
 Only clusters backing config-defined files are populated. All other clusters
@@ -234,11 +223,11 @@ Unallocated regions (holes) are skipped because `extents()` marks them as
 |---------------------|-----------------------|-------------|--------------------------------|
 | MBR + GPT stub      | 0 – 11                | ~6 KiB      | Protective MBR, GPT header, partition entries |
 | exFAT VBR           | Config-dependent      | ~1 sector   | Boot sector, OEM params, FS geometry |
-| FAT (allocation)    | FAT region (variable) | ~9.2 MiB    | Cluster allocation chains. Size depends on virtual device total_size and cluster_size. |
+| FAT (allocation)    | FAT region (variable) | ~9.2 MiB    | Cluster allocation chains. Size depends on virtual device image_size_gib and cluster_size_kib. |
 | Root directory      | First data clusters   | Variable    | Directory entries for all top-level game folders. |
 | Up-case table       | Up-case table region  | ~5.8 KiB    | Unicode up-case conversion table (5836 bytes, compressed by exFAT spec). |
 
-Total preload: **~9–10 MiB** for a typical 512 GiB virtual device with 1 MiB
+Total preload: depends on image_size_gib and cluster_size_kib. Example: **~35–40 MiB** for a 512 GiB image with 64 KiB
 clusters and ~50 games.
 
 ### 4.3 Preload Sequence
@@ -282,8 +271,8 @@ clusters and ~50 games.
 Preloading happens at two points:
 
 1. **Cold start:** After nbdkit starts, before first UDC bind. nbdsh reads
-   ~9–10 MiB through a local Unix socket — dominated by cache filter bookkeeping
-   (~150 ms). NFS round-trips for file-backed clusters add ~50–100 ms (LAN RTT).
+   example ~35–40 MiB (512 GiB image, 64 KiB clusters) through a local Unix socket — dominated by cache filter bookkeeping (~150 ms).
+   NFS round-trips for file-backed clusters add ~50–100 ms (LAN RTT).
    Total preload: ~200–250 ms.
 
 2. **Config reload:** After nbdkit restarts with new generation, before UDC
@@ -455,10 +444,10 @@ V1 monitoring reads nbdkit's stderr output for cache stats if `--verbose` is
 set.
 
 ```bash
-nbdkit --filter=blocksize --filter=cache \
-       cache-max-size=1G cache-on-read=true \
-       --verbose \
-       python /usr/lib/remotepfs/plugin.py 2>/var/log/remotepfs/nbdkit.log
+nbdkit --readonly --filter=blocksize --filter=cache \\
+       --verbose \\
+       python /usr/lib/remotepfs/remotepfs_nbd.py \\
+       cache-max-size=1G cache-on-read=true 2>/var/log/remotepfs/nbdkit.log
 ```
 
 ---
@@ -476,9 +465,9 @@ nbdkit --filter=blocksize --filter=cache \
 
 **Notes:**
 
-- **L1 hit latency** is nbdkit in-process LRU lookup + memcpy. No syscall, no
-  IPC. Dominated by CPU cache miss on cache metadata (~50–100 ns) + copy of
-  512–4096 bytes.
+- **L1 hit path** uses filesystem I/O on a temporary cache file in `$TMPDIR`.
+  Involves a read() syscall; performance depends on the backing filesystem
+  and mount options. Measure on target hardware; no fixed latency guaranteed.
 - **L2 hit latency** is kernel page cache lookup + copy_to_user. A syscall to
   `pread()` + memory copy. 2–5× slower than L1 hit but still sub-millisecond.
 - **NFS miss latency** is LAN round-trip + NAS disk read. GbE RTT is ~0.2 ms
@@ -514,7 +503,7 @@ involved in exFAT validation + directory enumeration.
 
 - **Correctness:** nbdkit cache filter is maintained by Red Hat, battle-tested
   in libguestfs/virt-v2v. It handles LRU eviction, block alignment, concurrent
-  access (PARALLEL thread model), and cache coherency correctly. A custom Python
+  access (SERIALIZE_REQUESTS thread model), and cache coherency correctly. A custom Python
   dict-based cache would need to replicate all of this.
 - **Zero plugin overhead on hit:** Cache filter runs before the Python plugin.
   A cache hit never enters Python. A Python-level cache would still pay the
@@ -532,7 +521,7 @@ involved in exFAT validation + directory enumeration.
   (cached at L2 instead).
 - The 1 GiB L1 cache fits approximately 4096 blocks of 256 KiB. This is enough
   for all metadata plus hot game data if desired.
-- Tuning: if game data hit rate is too low, reduce `cache-min-block` to `131072`
+- Tuning: if game data hit rate is too low, reduce `cache-min-block-size` to `131072`
   (128 KiB) to allow some game data into L1. Trade RAM for hit rate.
 
 ### 9.3 Why preloading over lazy warming
@@ -579,10 +568,8 @@ nbdkit versions).
 
 ### 10.3 Persistent L1 Cache Across Restarts
 
-Serialize the nbdkit cache filter state to disk (or tmpfs) so that nbdkit
-restart on config reload preserves hot cache entries that remain valid (same NFS
-file + offset mappings). Requires cache filter modifications upstream.
-
+Serialize the cache filter state (if supported by nbdkit) so that nbdkit
+restart on config reload can preserve hot cache entries that remain valid.
 ### 10.4 Prefetch Heuristics
 
 Monitor PS5 read patterns and issue speculative pread() calls for likely-next

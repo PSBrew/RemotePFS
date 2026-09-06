@@ -75,11 +75,12 @@ nbdkit instance:
 
 ```bash
 # Start nbdkit with the Python plugin (see spec 06)
-nbdkit -U /run/remotepfs/nbd.sock \
+nbdkit --readonly -U /run/remotepfs/nbd.sock \
        --filter=blocksize \
        --filter=cache \
-       python ./plugin.py \
-       config=/etc/remotepfs/config.toml &
+       python remotepfs_nbd.py \
+       image_size=<computed> \
+       mapper_state=<path> &
 
 # Connect kernel NBD client to the local Unix socket
 nbd-client -U /run/remotepfs/nbd.sock -r /dev/nbd0
@@ -187,7 +188,7 @@ enforced at three layers: nbdkit `--readonly`, `nbd-client -r`, and
 1. modprobe nbd g_mass_storage
 2. Start nbdkit daemon: nbdkit --readonly -U /run/remotepfs/nbd.sock \
       --pidfile /run/remotepfs/nbdkit.pid --unix-mode=0600 \
-      --user remotepfs-nbd --group remotepfs --exit-with-parent \
+      --exit-with-parent \
       --filter=blocksize --filter=cache python remotepfs_nbd.py
 3. nbd-client -U /run/remotepfs/nbd.sock -r /dev/nbd0
 4. Wait for device readiness: poll for /sys/block/nbd0/dev (or udevadm settle)
@@ -654,7 +655,7 @@ set -euo pipefail
 
 GADGET_DIR="/sys/kernel/config/usb_gadget/remotepfs"
 NBDKIT_SOCK="/run/remotepfs/nbd.sock"
-CONFIG_TOML="/etc/remotepfs/config.toml"
+CONFIG_TOML="/etc/remotepfs/remotepfs.conf"
 
 echo "=== RemotePFS USB Gadget Setup ==="
 
@@ -665,11 +666,12 @@ modprobe g_mass_storage
 # 2. Start nbdkit (if not already running)
 if ! pgrep -f nbdkit > /dev/null; then
     echo "Starting nbdkit..."
-    nbdkit -U "$NBDKIT_SOCK" \
+    nbdkit --readonly -U "$NBDKIT_SOCK" \
            --filter=blocksize \
            --filter=cache \
-           python /usr/local/lib/remotepfs/plugin.py \
-           config="$CONFIG_TOML" &
+           python /usr/lib/remotepfs/remotepfs_nbd.py \
+           image_size=<computed> \
+           mapper_state=<path> &
     sleep 2
 fi
 
@@ -697,8 +699,8 @@ fi
 mkdir -p "$GADGET_DIR"
 
 # Descriptors
-echo 0x1d6b > "$GADGET_DIR/idVendor"
-echo 0x0104 > "$GADGET_DIR/idProduct"
+echo 0x1d6b > "$GADGET_DIR/idVendor"   # Linux Foundation
+echo 0x0104 > "$GADGET_DIR/idProduct"  # Multifunction Composite Gadget (default)
 echo 0x0100 > "$GADGET_DIR/bcdDevice"
 echo 0x0300 > "$GADGET_DIR/bcdUSB"
 

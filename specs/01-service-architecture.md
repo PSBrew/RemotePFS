@@ -16,7 +16,8 @@
                             ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │                     g_mass_storage                                   │
-│  file=/dev/nbd0, ro=1, stall=0, idVendor=0x054c, idProduct=0x0cba  │
+│  file=/dev/nbd0, ro=1, stall=1, nofua=1, forced_eject=1,           │
+│  idVendor=0x1d6b, idProduct=0x0104                                 │
 │  (linux-usb-gadgets, dwc3 driver, USB Device (Gadget) controller)    │
 └───────────────────────────┬──────────────────────────────────────────┘
                             │ block I/O
@@ -30,29 +31,28 @@
                             ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │                     nbdkit (server)                                  │
-│  nbdkit -U /run/remotepfs/nbd.sock                                    │
-│         --filter=blocksize minblock=512 maxdata=1048576 maxlen=4M    │
-│         --filter=cache cache-min-block=262144 cache-max-size=1G       │
-│         python /usr/lib/remotepfs/plugin.py                           │
+│  nbdkit -U /run/remotepfs/nbd.sock --readonly                         │
+│         --filter=blocksize --filter=cache                             │
+│         python /usr/lib/remotepfs/remotepfs_nbd.py                    │
+│         minblock=512 maxdata=65536 maxlen=4M                          │
+│         cache-min-block-size=262144 cache-max-size=1G                 │
 │                                                                      │
 │  Filters (applied in order):                                         │
-│    1. cache: 1 GiB COW LRU cache. Absorbs repeated reads (exFAT      │
-│       metadata, directory entries). Cache-min-block=256K means       │
-│       sub-256K reads are promoted (metadata) while large sequential   │
-│       reads bypass.                                                   │
-│    2. blocksize: Normalizes all reads to 512–1M range. Splits        │
-│       oversized PS5 requests. Adds read-modify-write for partial.    │
+│    1. blocksize: Enforces `minblock=512`, `maxdata=65536`. Aligns/pads        │
+│       small reads; fragments oversized requests into 64 KiB chunks.            │
+│    2. cache: Temp-file cache (`$TMPDIR`), `cache-on-read=true`. Capacity       │
+│       bounded by `cache-max-size`. LRU eviction (see nbdkit-cache-filter).     │
 │                                                                      │
 │  Plugin: Python 3.11+ plugin implementing:                            │
-│    - pread(h, count, offset): Forward to SectorMapper.               │
+│    - pread(h, buf, offset, flags): Forward to SectorMapper.              │
 │    - extents(h, count, offset, flags): Query sparse/hole map from    │
 │      SectorMapper (optimizes PS5 reads, avoids reading zeros).       │
 │    - get_size(h): Return total virtual exFAT size (computed from     │
 │      config at compile time).                                         │
 │    - cache  (bool): Enabled (nbdkit cache filter active).            │
-│    - thread_model(): Return NBDKIT_THREAD_MODEL_PARALLEL.            │
+│    - thread_model(): Return nbdkit.THREAD_MODEL_SERIALIZE_REQUESTS.        │
 └───────────────────────────┬──────────────────────────────────────────┘
-                            │ pread(offset, count)
+                            │ pread(h, buf, offset, flags)
                             ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │                     SectorMapper                                      │
@@ -77,11 +77,11 @@
 │              NFS File Access Layer                                    │
 │  Open file descriptors to NFS mounts (one per NFS server).           │
 │  Linux kernel NFS client (in-kernel, no userspace daemon).           │
-│  Mount options: rsize=1048576, noac (or very long attribute cache),  │
-│  lookupcache=pos (cached dentries), hard, intr, tcp.                 │
+│  Mount options: ro,hard,nconnect=2,rsize=1048576,noatime,nosuid,    │
+│  nodev,noexec. NFS v4.1 over TCP.                                    │
 │                                                                      │
 │  Two-tier caching:                                                    │
-│    Tier 1 — nbdkit cache filter (1 GiB RAM, COW LRU).                │
+│    Tier 1 — nbdkit cache filter (temp-file cache; LRU).               │
 │    Tier 2 — Linux page cache (automatic, NFS files).                 │
 │                                                                      │
 │  Metadata preloading (V1): Before UDC bind, warm nbdkit cache by     │
@@ -108,40 +108,33 @@ Manages the virtual filesystem layout. Single TOML config file maps virtual
 paths to NFS source paths. Supports multiple NFS servers.
 
 ```toml
-# /etc/remotepfs/config.toml
+# /etc/remotepfs/remotepfs.conf
 
-[general]
-label = "PS5 Games"
-serial = "REMOTEPFS001"
-uuid = "a1b2c3d4-e5f6-7890-abcd-ef0123456789"
-sector_size = 512
-cluster_size = 1048576                    # 1 MiB clusters
-total_size = "512G"                       # Virtual device size
+[global]
+image_size_gib = 2048
+cluster_size_kib = 64                     # Locked to 64 (PS5 requirement)
+label = "REMOTEPFS"
+oem_name = "REMOTEPFS"
 
-[[nfs_servers]]
-name = "synology"
-host = "192.168.1.100"
+[[sources]]
+name = "nas1"
+server = "192.168.1.100"
 export = "/volume1/games"
-mount_options = ["rsize=1048576", "hard", "intr", "tcp"]
+mount_point = "/mnt/nas1"
+nfs_options = "nfsvers=4.1,nconnect=2,rsize=1048576,wsize=1048576,hard,noatime,nosuid,nodev,noexec"
 
-[[games]]
-virtual_path = "/PS5/Games/Elden Ring"
-label = "Elden Ring"
-nfs_server = "synology"
-source_dir = "/ps5-games/elden-ring"
-sfo_file = "param.sfo"
-icon0_file = "icon0.png"
-pic0_file = "pic0.png"
-pic1_file = "pic1.png"
+[[entries]]
+virtual_path = "Elden Ring"
+source = "/mnt/nas1/elden-ring/"
+type = "directory"
 
-[[games]]
-virtual_path = "/PS5/Games/God of War Ragnarok"
-label = "God of War Ragnarok"
-nfs_server = "synology"
-source_dir = "/ps5-games/gow-ragnarok"
+[[entries]]
+virtual_path = "God of War Ragnarok"
+source = "/mnt/nas1/gow-ragnarok/"
+type = "directory"
 ```
 
-**Two-phase deployment model:**
+**Two-phase deployment model (V1):**
 
 1. `POST /api/config/compile`: Validates config, builds virtual exFAT metadata
    (FAT, bitmap, directory tree), computes total size. Returns generation ID
@@ -149,7 +142,10 @@ source_dir = "/ps5-games/gow-ragnarok"
 2. `POST /api/config/activate`: Atomically swaps active generation. Restarts
    nbdkit with new plugin state. Rebinds UDC if currently bound.
 
-See [spec 08 — Config System](08-config-system.md) for full detail.
+`PUT /api/config` and `POST /api/config/reload` are convenience wrappers that
+combine compile + activate into a single call (see spec 08). All endpoints
+are listed in [spec 08 — HTTP API](08-http-api.md). Config schema and
+validation rules are in [spec 07 — Config System](07-config-system.md).
 
 ### 2.2 Virtual exFAT Builder (SectorMapper)
 
@@ -189,8 +185,8 @@ Lifecycle management for the nbdkit process serving the NBD device.
 
 | Position | Filter      | Purpose                                           |
 |----------|-------------|---------------------------------------------------|
-| 1 (outer)| cache       | COW LRU cache (1 GiB). Promotes small reads.       |
-| 2        | blocksize   | Normalize I/O to 512–1M range. Split/splice reads. |
+| 1 (outer)| blocksize   | Enforce `minblock=512`; fragment reads >64 KiB (`maxdata=65536`). |
+| 2        | cache       | Temp-file cache (`$TMPDIR`), `cache-on-read=true`, bounded by `cache-max-size`; LRU eviction. |
 | 3 (inner)| python      | Plugin → SectorMapper → NFS.                       |
 
 ### 2.4 USB Gadget Manager
@@ -201,7 +197,7 @@ Manages the `g_mass_storage` USB gadget via ConfigFS.
 
 - Create gadget directory structure in `/sys/kernel/config/usb_gadget/`.
 - Configure USB descriptor strings (manufacturer, product, serial).
-- Bind `g_mass_storage` function with `file=/dev/nbd0, ro=1, stall=0`.
+- Bind `g_mass_storage` function with `file=/dev/nbd0, ro=1, stall=1, nofua=1`.
 - Bind UDC (USB Device Controller) to activate gadget.
 - Unbind UDC gracefully before config changes.
 - Handle PS5 eject request (detected via UDC event or explicit API call).
@@ -211,14 +207,14 @@ Manages the `g_mass_storage` USB gadget via ConfigFS.
 ```
 1. mount -t configfs none /sys/kernel/config
 2. mkdir /sys/kernel/config/usb_gadget/remotepfs
-3. echo 0x054c > .../idVendor   # Sony
-4. echo 0x0cba > .../idProduct  # PS5 Extended Storage
+3. echo 0x1d6b > .../idVendor   # Linux Foundation (default descriptor)
+4. echo 0x0104 > .../idProduct  # Generic composite/mass storage gadget
 5. echo "RemotePFS" > .../strings/0x409/manufacturer
 6. echo "PS5 Extended Storage" > .../strings/0x409/product
-7. mkdir .../functions/mass_storage.usb0
-8. echo /dev/nbd0 > .../functions/mass_storage.usb0/lun.0/file
-9. echo 1 > .../functions/mass_storage.usb0/lun.0/ro
-10. ln -s .../functions/mass_storage.usb0 .../configs/c.1/
+7. mkdir .../functions/mass_storage.0
+8. echo /dev/nbd0 > .../functions/mass_storage.0/lun.0/file
+9. echo 1 > .../functions/mass_storage.0/lun.0/ro
+10. ln -s .../functions/mass_storage.0 .../configs/c.1/
 11. echo <udc_name> > .../UDC
 ```
 
@@ -248,7 +244,7 @@ REST API on `localhost:8080` for config management and status monitoring.
 | GET    | `/api/status`           | Current state (bound/unbound, game count, etc.) |
 | POST   | `/api/eject`            | Gracefully unbind UDC (PS5 eject simulation)    |
 
-See [spec 07 — HTTP API](07-http-api.md) for full detail.
+See [spec 08 — HTTP API](08-http-api.md) for full detail.
 
 ### 2.6 systemd Service
 
@@ -291,11 +287,8 @@ nbd.ko sends NBD_CMD_READ(offset=X*512, length=L*512) over AF_UNIX socket
   │
   ▼
 nbdkit receives NBD request:
-  cache filter: check if [offset, offset+length) is in cache
-    ├─ cache hit → return cached data (no plugin call)
-    └─ cache miss → forward to blocksize filter
-  blocksize filter: split if length > maxdata (1M) or align to 512
-  blocksize filter → python plugin .pread(h, count, offset)
+  blocksize filter: align to 512-byte boundary; split if length > maxdata (65536)
+  blocksize filter → cache filter → python plugin .pread(h, buf, offset, flags)
   │
   ▼
 plugin.pread() → SectorMapper.resolve(offset)
@@ -321,7 +314,7 @@ Data flows back up: NFS → page cache → SectorMapper → plugin → cache fil
 ### 3.2 Config Reload (game switch)
 
 ```
-1. User edits /etc/remotepfs/config.toml (add/remove games)
+1. User edits /etc/remotepfs/remotepfs.conf (add/remove games)
 2. POST /api/config/compile
    ├─ Validate TOML syntax + field constraints
    ├─ Verify NFS mounts accessible, source files exist
@@ -409,12 +402,12 @@ Modules **not** required (removed from V0 design):
 
 ```
 /etc/remotepfs/
-  config.toml              # Active config (symlink or direct file)
+  remotepfs.conf           # Active config (symlink or direct file)
 
 /var/lib/remotepfs/
   generations/
     <uuid>/                # Compiled generation
-      config.toml           # Normalized config copy
+      remotepfs.conf        # Normalized config copy
       sector_map.pickle     # Serialized SectorMapper state
       metadata.bin          # Pre-built exFAT metadata (Regions 0–1)
       validation.json       # Compile validation report
@@ -425,7 +418,7 @@ Modules **not** required (removed from V0 design):
   api.sock                  # HTTP API AF_UNIX socket (optional)
 
 /usr/lib/remotepfs/
-  plugin.py                 # nbdkit Python plugin
+  remotepfs_nbd.py          # nbdkit Python plugin
   sector_mapper.py          # Virtual exFAT SectorMapper
   config_compiler.py        # TOML → exFAT metadata compiler
   nfs_layer.py              # NFS file access abstraction
@@ -445,7 +438,7 @@ Modules **not** required (removed from V0 design):
 
 ```
 1. systemd starts remotepfs.service
-2. Load config from /etc/remotepfs/config.toml
+2. Load config from /etc/remotepfs/remotepfs.conf
 3. Mount NFS exports (if not already mounted via fstab):
      mount -t nfs4 -o rsize=1048576,hard,intr,tcp,noac \
        192.168.1.100:/volume1/games /mnt/nfs/synology

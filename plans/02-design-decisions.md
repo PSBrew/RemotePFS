@@ -68,7 +68,7 @@ Document finalized 2026-09-05. Records architectural decisions made during the d
 [global]
 image_size_gib = 2048          # Virtual exFAT image size (GiB)
 cluster_size_kib = 64          # Locked to 64 (ShadowMountPlus)
-label = "RemotePFS"            # Volume label (11 chars max, uppercase)
+label = "REMOTEPFS"            # Volume label (11 chars max, uppercase)
 oem_name = "REMOTEPFS"         # OEM name (8 chars)
 
 [[sources]]
@@ -76,7 +76,7 @@ name = "nas1"
 server = "192.168.1.100"
 export = "/volume1/games"
 mount_point = "/mnt/nas1"
-nfs_options = "nfsvers=4.1,nconnect=4,rsize=1048576,wsize=1048576,hard,noatime"
+nfs_options = "nfsvers=4.1,nconnect=2,rsize=1048576,wsize=1048576,hard,noatime"
 
 [[entries]]
 virtual_path = "fps games"     # Directory in exFAT root (recursive scan)
@@ -97,24 +97,33 @@ type = "file"
 - Validation rejects invalid configs before any layout change (field-level errors, spec 07)
 - TOML chosen over YAML/JSON per mkpfs conventions (TOML is standard in Python ecosystem)
 
-## DD-04: Config Hot-Reload via Two-Phase Compile/Activate
+## DD-04: Config Hot-Reload Contract (Two-Phase API)
 
-**Decision:** Support config changes without service restart via a two-phase deploy API: `POST /api/config/compile` validates and compiles a new config into an inert generation (returns `gen_id`), then `POST /api/config/activate?gen=` atomically swaps the active generation. No inotify file watch.
+**Decision:** Canonical V1 contract uses two endpoints: `POST /api/config/compile`
+then `POST /api/config/activate`. This preserves a side-effect-free validation
+boundary before activation. `PUT /api/config` and `POST /api/config/reload` are
+convenience wrappers that perform the same compile/activate sequence internally.
+See spec 08 for full API.
 
-*Update (2026-09-05): superseded the earlier API reload + inotify design. See specs 07 and 08.*
-
-**Reload sequence (specs 07/08):**
-1. Compile: parse + validate TOML, scan NFS sources, build virtual exFAT layout, precompute extent table, assign stable file IDs (SHA256 of `virtual_path` truncated to 32 bits)
-2. Invalid config: return 422 with field-level errors; current generation keeps serving
-3. Activate: unbind UDC (PS5 sees disconnect), pickle new mapper state, restart nbdkit, reconnect nbd-client (`nbd-client -U ... -r`), poll `/sys/block/nbd0/size > 0`, warm cache via NBD pread, rebind UDC
-4. Concurrent activate attempts are guarded by an `asyncio.Lock`; the second attempt returns 423 `RELOAD_IN_PROGRESS`
-5. PS5 sees USB disconnect/reconnect — ShadowMountPlus handles this (10s stability wait + 15s scan interval)
+**Reload sequence (spec 08):**
+1. Parse + validate new config → `Config` object
+2. Build `Generation(gen=N+1, config=config)` — fully inert. Mount new NFS sources (retain old mounts during build), scan directories, assign stable file IDs (SHA256 of `virtual_path` truncated to 32 bits), build `SectorMapper`, precompute metadata buffer
+3. Unbind UDC → PS5 sees disconnect
+4. Unmount old NFS sources not in new config
+5. Pickle new generation state to `/run/remotepfs/mapper.state`
+6. Restart nbdkit with new state
+7. Reconnect nbd-client (`nbd-client -U ... -r`) to new nbdkit socket, poll `/sys/block/nbd0/size > 0`
+8. Atomically swap `_active_gen = new_gen`
+9. Rebind UDC → PS5 sees new device
+10. Cleanup: close old gen's orphaned fds, free old gen memory
 
 **Consequences:**
-- Unbind/rebind UDC is necessary — can't swap exFAT metadata while PS5 is mid-read
+- Single API call replaces two-phase compile + activate; simpler client integration
+- Unbind/rebind UDC still necessary — can't swap exFAT metadata while PS5 is mid-read
 - PS5 disruption is ~5-15 seconds (unbind + rebuild + rebind + ShadowMountPlus stability wait)
 - Not a "live" swap — this is a clean disconnect/reconnect, not transparent
-- Compile is side-effect-free (dry-run): validation failures never touch the serving generation
+- Validation failures never touch the serving generation; current gen keeps serving
+- Concurrent reload attempts guarded by `asyncio.Lock`; second attempt returns 423 `RELOAD_IN_PROGRESS`
 - The active generation is immutable; in-flight reads finish against the old generation
 
 ## DD-05: Single Active USB Device, Multiple Games
@@ -131,9 +140,8 @@ type = "file"
 
 ## DD-06: Metadata Preloading in V1
 
-**Decision:** Include `pread()`-based metadata warming in V1 scope. Warm the nbdkit cache (L1) and the NFS page cache (L2) with exFAT boot sectors, FAT, and root directory entries before UDC bind, using nbdsh/nbdcopy against the Unix socket with target ranges from `SectorMapper.get_hot_ranges()` (~9-10 MiB).
+**Decision:** Include `pread()`-based metadata warming in V1 scope. Warm the nbdkit cache (L1) and the NFS page cache (L2) with exFAT boot sectors, FAT, and root directory entries before UDC bind, using nbdsh/nbdcopy against the Unix socket with target ranges from `SectorMapper.get_hot_ranges()` (example ~35–40 MiB for 512 GiB image, 64 KiB clusters).
 
-*Update (2026-09-05): preloading was promoted from "inherent" to explicit warming. Because nbdkit is a separate process with its own cache filter, metadata must be pushed through the NBD chain before the PS5 ever issues a read.*
 
 **Rationale:** The PS5 mount sequence reads boot sector, FAT, and root directory immediately after USB enumeration. Without preloading, those first reads are NFS round-trips (~1-10 ms each) during partition scan. With warming, the PS5 initial scan is entirely cache hits (~50 ms).
 
@@ -145,11 +153,11 @@ type = "file"
 
 *Update (2026-09-05): framework is FastAPI + Pydantic v2 + uvicorn (ASGI); superseded the earlier stdlib `http.server`/aiohttp sketch. See spec 08.*
 
-**Endpoints (two-phase deploy):**
-- `POST /api/config/compile` — validate + compile config, dry-run, returns `gen_id`
-- `POST /api/config/activate?gen=` — atomic generation swap
+**Endpoints:**
+- `PUT /api/config` — validate + apply config in one step (hot-reload, returns 200 or 422)
+- `POST /api/config/reload` — reload config from disk (equivalent to PUT with file contents)
+- `GET /api/config` — current active config as JSON
 - `GET /api/status` — service state, NFS mounts, NBD status, UDC status, game count
-- `GET /api/config`, `POST /api/config/reload` — config introspection and disk reload (spec 08)
 - `GET /api/health` — liveness check
 - `GET /api/games` — virtual filesystem entries visible to PS5
 - `POST /api/eject` — graceful UDC unbind
@@ -222,7 +230,7 @@ PSBrew/RemotePFS (private)
 | Virtual exFAT builder | In-memory, ro, single LUN | — |
 | Config-driven virtual layout | TOML, file + directory | — |
 | Config hot-reload | Two-phase compile/activate | — |
-| Metadata preloading | pread() warming via NBD (~9-10 MiB) before UDC bind | — |
+| Metadata preloading | pread() warming via NBD (example ~35–40 MiB for 512 GiB/64 KiB) before UDC bind | — |
 | USB gadget (BOT) | Single LUN, ro | UAS (f_tcm) |
 | HTTP API | FastAPI + Pydantic v2 + uvicorn, localhost | Web UI |
 | Alternative transport backends | — | FTP/HTTP/BitTorrent |

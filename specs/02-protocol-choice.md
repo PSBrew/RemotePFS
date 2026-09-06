@@ -42,7 +42,7 @@ is NFS v4.1.
 ### 1.2 Mount Configuration
 
 ```bash
-mount -t nfs4 -o ro,hard,nconnect=2,rsize=1048576,noatime \
+mount -t nfs4 -o ro,hard,nconnect=2,rsize=1048576,noatime,nosuid,nodev,noexec \
     nas.example.com:/exports/games /mnt/nas/games
 ```
 
@@ -53,6 +53,9 @@ mount -t nfs4 -o ro,hard,nconnect=2,rsize=1048576,noatime \
 | `nconnect`       | 2           | Two TCP connections per mount, one per NIC.   |
 | `rsize`          | 1048576     | 1 MB read size, matches NFS max.              |
 | `noatime`        | —           | Skip access-time updates, reduce metadata ops.|
+| `nosuid`         | —           | Ignore setuid/setgid bits (security hardening).|
+| `nodev`          | —           | Do not interpret device files on this mount.  |
+| `noexec`         | —           | Prevent direct execution from this mount.     |
 
 ### 1.3 Why Not SMB 3.1.1 for NAS Access
 
@@ -200,11 +203,13 @@ modprobe nbd
 nbdkit \
     --foreground \
     --unix /run/remotepfs/nbd.sock \
+    --readonly \
     --filter=blocksize \
     --filter=cache \
-    --cache-size=1G \
-    --cache-writeback=NONE \
-    python /opt/remotepfs/plugin.py
+    python /usr/lib/remotepfs/remotepfs_nbd.py \
+    cache-min-block-size=262144 \
+    cache-max-size=1073741824 \
+    cache-on-read=true
 
 # 3. Connect kernel NBD client to UNIX socket via nbd-client
 nbd-client -U /run/remotepfs/nbd.sock -r /dev/nbd0
@@ -214,63 +219,19 @@ nbd-client -U /run/remotepfs/nbd.sock -r /dev/nbd0
 
 ---
 
-## 3. FileBackend Protocol
+## 3. Plugin API (nbdkit Python v2)
 
-The Python plugin's `FileBackend` class provides the storage interface between
-nbdkit and the virtual exFAT. Its protocol is minimal:
+RemotePFS implements the nbdkit Python plugin API v2 (see spec 06):
 
-```python
-from typing import Optional
+- `pread(h, buf, offset, flags)` — fill `buf` with data at `offset`
+- `extents(h, count, offset, flags)` — report sparse/zero extents
+- `get_size(h)` — return virtual device size
+- `block_size(h)` — return tuple `(512, 4096, 65536)` (min, preferred, max)
+- `thread_model()` — `nbdkit.THREAD_MODEL_SERIALIZE_REQUESTS`
 
-class FileBackend:
-    def pread(self, offset: int, size: int) -> bytes:
-        """Read bytes from the backing store.
-
-        Args:
-            offset: Byte offset within the virtual block device.
-            size: Number of bytes to read. Guaranteed to be block-aligned
-                by the blocksize filter.
-
-        Returns:
-            The requested bytes. Length must equal size.
-
-        Raises:
-            IOError: If the read cannot be satisfied.
-        """
-        ...
-
-    def extents(
-        self, offset: int, count: int
-    ) -> list[tuple[int, int, int]]:
-        """Report extent information for sparse region query.
-
-        Args:
-            offset: Starting byte offset.
-            count: Number of bytes to query.
-
-        Returns:
-            List of (offset, length, type) tuples, where type is:
-                0 = allocated/readable data
-                1 = hole (zero-filled, not allocated)
-                2 = zero (allocated but all zeros)
-        """
-        ...
-```
-
-**Design notes:**
-
-- `pread()` is used instead of `read()` to emphasise that the method is
-  stateless — no file cursor, no open/close, just read-at-offset. This matches
-  the NBD `NBD_CMD_READ` semantics exactly.
-
-- `extents()` enables nbdkit to report sparse regions to the kernel NBD client,
-  which in turn allows the kernel to skip reading known-zero sectors. This is
-  important for the virtual exFAT: unallocated regions (gaps between files,
-  free space) are reported as holes.
-
-- The `SectorMapper` (spec 06) translates block device offsets into NFS file
-  reads. `FileBackend` delegates to `SectorMapper`, which resolves the offset
-  to a specific file on the NFS mount and issues a `pread()` on that file.
+SectorMapper maps `(offset, length)` to `(NFS fd, file offset)` and performs
+`os.pread()` on NAS files. Unallocated regions are reported via `extents()` as
+holes/zeros so the kernel can skip reading them.
 
 ---
 
@@ -311,9 +272,9 @@ nbdkit → nbd.ko → /dev/nbd0 → mass_storage → PS5
 
 **Caching layers (two-tier):**
 
-1. **nbdkit cache filter (1 GiB).** LRU cache in nbdkit's process memory.
+1. **nbdkit cache filter (1 GiB).** LRU cache in a temporary file (`$TMPDIR`).
    Satisfies repeated reads of hot sectors without invoking the Python plugin.
-   Allocated as configurable parameter `--cache-size`.
+   Bounded by `cache-max-size` (see spec 04).
 
 2. **Linux page cache (NFS client).** The kernel caches NFS file data
    transparently. Since RemotePFS reads game files via `pread()` on NFS-mounted

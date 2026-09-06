@@ -227,8 +227,6 @@ nbdkit \
     -U /run/remotepfs/nbd.sock \
     --pidfile /run/remotepfs/nbdkit.pid \
     --unix-mode=0600 \
-    --user remotepfs-nbd \
-    --group remotepfs \
     --exit-with-parent \
     --threads 1 \
     --max-request 98304 \
@@ -243,22 +241,22 @@ nbdkit \
 |------|-------|---------|
 | `-U` | `/run/remotepfs/nbd.sock` | Unix socket path |
 | `--pidfile` | `/run/remotepfs/nbdkit.pid` | Write PID file for lifecycle management |
-| `--unix-mode` | `0600` | Socket file permissions (root-only access) |
-| `--user` | `remotepfs-nbd` | Drop privileges to dedicated service user |
-| `--group` | `remotepfs` | Use remotepfs group for socket access |
+| `--unix-mode` | `0600` | Socket file permissions (service user-only access) |
+| `--user` | — | Managed by systemd `User=`. Omit in invocation. |
+| `--group` | — | Managed by systemd `Group=`. Omit in invocation. |
 | `--exit-with-parent` | — | nbdkit exits when parent process terminates |
 | `--threads` | 1 | Single-threaded (synchronous protocol) |
 | `--max-request` | 98304 (96 KiB) | Cap request size |
 | `--readonly` | — | Enforce read-only at protocol level |
 | `--filter=blocksize` | (see below) | Block alignment, size enforcement |
-| `--filter=cache` | (see below) | In-memory read cache |
+| `--filter=cache` | (see below) | Read cache (temporary file in `$TMPDIR`) |
 
 ### blocksize Filter
 
 ```
-blocksize-minblock=512     — 512-byte sector minimum (exFAT sector size)
-blocksize-maxdata=65536    — 64 KiB max read (match NFS rsize, page-friendly)
-blocksize-maxlen=134217728 — 128 MiB max request (nbdkit default, not constraining)
+minblock=512     — 512-byte sector minimum (exFAT sector size)
+maxdata=65536    — 64 KiB max read (match NFS rsize, page-friendly)
+maxlen=134217728 — 128 MiB max request (nbdkit default, not constraining)
 ```
 
 This filter ensures all I/O requests from the kernel NBD client are aligned to 512-byte boundaries and no larger than 64 KiB — matching USB mass-storage and ShadowMountPlus expectations (512-byte LVD sectors, 64 KiB cluster reads).
@@ -275,7 +273,7 @@ The cache filter sits between the kernel NBD client and our plugin. All reads hi
 - Re-reads of exFAT metadata (boot sector, FAT, root dir) are cache hits after first PS5 enumeration
 - Frequently accessed game regions (level headers, asset tables) stay cached
 - 1 GiB cache holds ~16 seconds of sustained 64 MB/s game streaming
-- Cache lives in nbdkit process memory (separate from Linux page cache)
+- Cache stored in a temporary file (`$TMPDIR`) (separate from Linux page cache)
 
 ## Plugin Communication
 
@@ -315,18 +313,13 @@ def config(key, value):
 
 ```bash
 # 1. Compile config, build virtual exFAT layout, pickle mapper state
-remotepfs-ctl compile /etc/remotepfs/config.toml
+remotepfs-ctl compile /etc/remotepfs/remotepfs.conf
 # → gen_id=abc123, image_size=154000000000, file_count=47
 
 # 2. Metadata preload (pread() warming before bind — V1 scope)
-remotepfs-ctl preload abc123    # ~9-10 MiB into page cache
+remotepfs-ctl preload abc123    # Example ~35–40 MiB (512 GiB image, 64 KiB clusters) into caches
 # 3. Start nbdkit server
 remotepfs-ctl serve abc123
-# Spawns: nbdkit --readonly -U /run/remotepfs/nbd.sock \
-#           --pidfile /run/remotepfs/nbdkit.pid --unix-mode=0600 \
-#           --user remotepfs-nbd --group remotepfs --exit-with-parent \
-#           --filter=blocksize --filter=cache \
-#           python remotepfs_nbd.py mapper_state=/run/remotepfs/mapper.state
 # nbdkit forks to background, socket ready
 
 # 4. Connect kernel NBD client (read-only)
@@ -355,7 +348,7 @@ nbd-client -d /dev/nbd0 2>/dev/null
 kill $(cat /run/remotepfs/nbdkit.pid)
 
 # 3. Compile new config, activate (atomic generation swap)
-remotepfs-ctl compile /etc/remotepfs/config.toml
+remotepfs-ctl compile /etc/remotepfs/remotepfs.conf
 # → gen_id=def456
 remotepfs-ctl activate def456
 # Under the hood: pickle new state → spawn new nbdkit → connect nbd-client
@@ -440,9 +433,9 @@ All packages available in Debian Bookworm/arm64 (Armbian base) and Ubuntu 24.04.
 | nbdkit overhead per request | ~2-10 us | C framework, no Python for cache hits |
 | `pread()` overhead (cache miss) | ~10-30 us | Python dict lookups |
 | `extents()` overhead | ~50 us | Typical for 1 MiB query range |
-| cache filter hit latency | ~1 us | In-memory, nbdkit C code |
-| NFS `pread()` latency | ~1-10 ms | Dominant factor on cache miss |
-| Total per-request (cache miss) | ~1-10 ms | NFS dominates |
+| cache filter hit latency | — | Depends on cache file backing store and filesystem. Measure on target. |
+| NFS `pread()` latency | context-dependent | Dominant factor on cache miss |
+| Total per-request (cache miss) | context-dependent | NFS dominates |
 | Zero-region throughput (extents) | ~10 GB/s | Synthesized, no I/O |
 | Max throughput (64 KiB req) | ~120 MB/s | GbE-limited |
 

@@ -18,7 +18,6 @@ this repository.
 - **Repo:** PSBrew/RemotePFS (single repo, private; research merged in 2026-09-05).
 - **Goal phase:** Implementation (research, specification, and planning complete).
 - **Methodology:** spec-driven development, resumable state tracking.
-- **Local path:** ~/development/ps5/remotepfs (case-insensitive APFS; also resolves as RemotePFS).
 
 ## Repository Layout
 

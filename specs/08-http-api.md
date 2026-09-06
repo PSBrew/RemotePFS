@@ -82,6 +82,36 @@ Returns current active config as JSON.
   "entries": [...]
 }
 ```
+### POST /api/config/compile
+
+Validate config and build virtual exFAT metadata without activating.
+
+Response:
+```json
+{
+  "status": "compiled",
+  "generation": 6,
+  "warnings": [],
+  "size_bytes": 2199023255552
+}
+```
+
+### POST /api/config/activate
+
+Activate previously compiled generation. Performs safe cutover:
+- Unbind UDC
+- Restart nbdkit with new plugin state
+- Reconnect NBD client
+- Rebind UDC
+
+Response:
+```json
+{
+  "status": "activated",
+  "generation": 6,
+  "reload_time_ms": 8200
+}
+```
 
 ### PUT /api/config
 

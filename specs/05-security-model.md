@@ -110,7 +110,7 @@ nbdkit --readonly \
        --unix /run/remotepfs/nbd.sock \
        --filter=blocksize \
        --filter=cache \
-       python /usr/lib/remotepfs/plugin.py
+       python /usr/lib/remotepfs/remotepfs_nbd.py
 ```
 
 The `--readonly` flag causes nbdkit to reject `NBD_CMD_WRITE`, `NBD_CMD_TRIM`,
@@ -162,8 +162,6 @@ would allow reading arbitrary sectors from the virtual exFAT.
 # Socket creation by nbdkit
 nbdkit -U /run/remotepfs/nbd.sock \
     --unix-mode=0600 \
-    --user remotepfs-nbd \
-    --group remotepfs \
     --exit-with-parent \
     --readonly \
     --pidfile /run/remotepfs/nbdkit.pid \
@@ -176,22 +174,17 @@ nbdkit -U /run/remotepfs/nbd.sock \
 
 | Property   | Value                    | Rationale                                      |
 |------------|--------------------------|------------------------------------------------|
-| Owner      | `root`                   | nbdkit runs as root (drops capabilities).       |
-| Group      | `remotepfs`              | Only members of the remotepfs group can access. |
-| Mode       | `0600`                   | No world/other access.                          |
-| Directory  | `/run/remotepfs/`        | tmpfs, cleared on reboot, 0750 root:remotepfs.  |
-
+| Owner      | `remotepfs-nbd`          | Service user (User=). Socket created by nbdkit. |
+| Group      | `remotepfs`              | Group label only; socket access controlled by `0600` owner. |
+| Mode       | `0600`                   | No world/other access.                           |
+| Directory  | `/run/remotepfs/`        | systemd RuntimeDirectory. Owned by service user/group. Mode `0700`. |
 The `remotepfs` group is created at package installation. Only the `remotepfs`
 service user (for CLI/API access) and the nbdkit process user are members.
 
 The parent directory is also restricted:
 
-```bash
-mkdir -p /run/remotepfs
-chown root:remotepfs /run/remotepfs
-chmod 0750 /run/remotepfs
-
----
+Managed by systemd: RuntimeDirectory=remotepfs, RuntimeDirectoryMode=0700.
+Do not create manually.
 
 ## 4. nbdkit Process Isolation
 
@@ -210,7 +203,7 @@ The `remotepfs-nbd` user is created at package installation:
 - No login shell (`/usr/sbin/nologin`).
 - No home directory.
 - No password.
-- Member of `remotepfs` group (for socket access).
+- Member of `remotepfs` group (label only; not required for socket access).
 
 ### 4.2 Capability Restrictions
 
@@ -253,8 +246,8 @@ SystemCallFilter=@system-service
 | `ProtectHome=yes`         | `/home` appears empty.                              |
 | `ReadOnlyPaths=`          | Explicit read-only access to config and plugin dirs.|
 | `ReadWritePaths=`         | Only `/run/remotepfs` is writable (socket creation).|
-| `RuntimeDirectory=`       | Creates `/run/remotepfs` as private tmpfs at service start.|
-| `RuntimeDirectoryMode=`   | `0700` — only root can access the socket directory. |
+| `RuntimeDirectory=`       | Creates `/run/remotepfs` as private tmpfs at service start. Owned by service `User=`/`Group=`. |
+| `RuntimeDirectoryMode=`   | `0700` — only the service user can access the socket directory. |
 | `RestrictAddressFamilies=`| Only `AF_UNIX` allowed. No TCP/UDP socket creation. |
 | `SystemCallFilter=`       | Whitelist of syscalls. Blocks dangerous calls.      |
 
@@ -308,12 +301,9 @@ Future versions MAY add authentication if remote API access is required
 config to crash the compiler, exhaust memory, or trigger path traversal.
 
 **Mitigations:**
-- TOML parser in strict mode: rejects duplicate keys, invalid UTF-8, and
-  type mismatches.
-- Path traversal defense: reject `virtual_path` and `source_dir` values
-  containing `../`, `./`, or absolute paths starting with `/`.
-- Size limits: reject config bodies larger than 1 MiB. Reject more than
-  10,000 game entries. Reject `total_size` values exceeding 16 TiB.
+- TOML parser in strict mode: rejects duplicate keys, invalid UTF-8, and type mismatches.
+- Path traversal defense: reject `entries.virtual_path` and `entries.source` containing `../`, `./`, or `~`; also reject `entries.source` outside configured `mount_point`s.
+- Size limits: reject config bodies larger than 1 MiB. Reject >10,000 entries. Reject `global.image_size_gib` values outside limits.
 - Memory limit: compile process bounded by systemd `MemoryMax=2G`.
 - Validation report enumerates all errors; no partial compilation.
 
@@ -374,17 +364,23 @@ The TOML config contains no credentials, keys, tokens, or secrets:
 
 ```toml
 # What the config contains (safe):
-[general]
+[global]
+image_size_gib = 2048
+cluster_size_kib = 64
 label = "PS5 Games"
+oem_name = "REMOTEPFS"
 
-[[nfs_servers]]
+[[sources]]
 name = "synology"
-host = "192.168.1.100"
+server = "192.168.1.100"
 export = "/volume1/games"
+mount_point = "/mnt/nas1"
+nfs_options = "nfsvers=4.1,nconnect=4,rsize=1048576,hard,noatime"
 
-[[games]]
-virtual_path = "/PS5/Games/Elden Ring"
-source_dir = "/ps5-games/elden-ring"
+[[entries]]
+virtual_path = "Elden Ring"
+source = "/mnt/nas1/ps5-games/elden-ring"
+type = "directory"
 ```
 
 NFS authentication is handled at mount time by the Linux kernel NFS client.
@@ -396,21 +392,21 @@ and export paths, but the credentials live in the kernel's NFS mount context.
 
 The config compiler enforces strict validation on all fields:
 
-| Field              | Validation                                                    |
-|--------------------|---------------------------------------------------------------|
-| `virtual_path`     | Must start with `/PS5/`. No `..`, no `./`, no symlinks.       |
-| `source_dir`       | No `..`, no absolute paths, no shell metacharacters.          |
-| `host`             | Must be a valid IPv4 address or resolvable hostname.           |
-| `total_size`       | Positive integer. Minimum 1 GiB, maximum 16 TiB.               |
-| `cluster_size`     | Power of 2, 512 KiB to 32 MiB.                                |
-| `label`            | 1–11 characters (exFAT volume label limit).                   |
-| `serial`           | Alphanumeric, 1–32 characters.                                |
-| Game entry count   | Maximum 10,000 (reject with error beyond this).               |
-| Config body size   | Maximum 1 MiB (reject before parsing).                        |
+| Field                  | Validation                                                                           |
+|------------------------|---------------------------------------------------------------------------------------|
+| `global.image_size_gib`| Integer >= 1 and <= 262144 (exFAT limit).                                            |
+| `global.cluster_size_kib` | Exactly 64. Locked for PS5 compatibility.                                         |
+| `global.label`         | Uppercase ASCII, length <= 11.                                                       |
+| `global.oem_name`      | Uppercase ASCII, length == 8.                                                        |
+| `sources[]`            | Each has `name`, `server`, `export`, `mount_point`; names unique.                    |
+| `entries[].virtual_path` | Unique; no `/` characters (flat root in V1); length <= 255.                        |
+| `entries[].source`     | Absolute path under one of `sources[].mount_point`. No symlinks.                     |
+| Entry count            | Maximum 10,000 (reject with error beyond this).                                      |
+| Config body size       | Maximum 1 MiB (reject before parsing).                                               |
 
 ### 6.3 Path Traversal Defense
 
-All path fields are validated against traversal sequences:
+All path-like fields are validated against traversal sequences and constrained to configured roots.
 
 ```python
 FORBIDDEN_PATTERNS = ["..", "./", "~"]
@@ -421,26 +417,25 @@ def validate_path(path: str, field_name: str) -> None:
             raise ConfigValidationError(
                 f"{field_name}: path traversal pattern '{pattern}' rejected"
             )
-    if path.startswith("/") and field_name == "source_dir":
-        raise ConfigValidationError(
-            f"{field_name}: absolute paths not allowed in source_dir"
-        )
+
+def validate_entry(source: str, virtual_path: str, mount_points: list[str]) -> None:
+    if not any(source == mp or source.startswith(mp + "/") for mp in mount_points):
+        raise ConfigValidationError("entries.source: must be under a configured mount_point")
+    if "/" in virtual_path:
+        raise ConfigValidationError("entries.virtual_path: must not contain '/'")
 ```
 
-`virtual_path` MUST start with `/PS5/` and contain no traversal patterns.
-`source_dir` is relative to the NFS mount root and MUST NOT start with `/`
+`entries.virtual_path` MUST NOT contain `/` (flat root). `entries.source` MUST
+lie under one of the configured `mount_point` directories.
 
 ### 6.4 File Permissions
 
 ```bash
-chown root:remotepfs /etc/remotepfs/config.toml
-chmod 0640 /etc/remotepfs/config.toml
+chown root:remotepfs /etc/remotepfs/remotepfs.conf
+chmod 0640 /etc/remotepfs/remotepfs.conf
 ```
 
-Readable by root and `remotepfs` group. Not world-readable (though no secrets
-are stored, it reveals NAS topology).
-
----
+Readable by root and `remotepfs` group. Not world-readable.
 
 ## 7. Threat Model
 
@@ -450,8 +445,8 @@ are stored, it reveals NAS topology).
 
 **Attack vectors:**
 - TOML parser bomb: deeply nested tables, excessively long keys.
-- Path traversal in `virtual_path` or `source_dir`.
-- Integer overflow in `total_size` or `cluster_size`.
+- Path traversal in `entries.virtual_path` or `entries.source`.
+- Invalid sizes in `global.image_size_gib` or `global.cluster_size_kib`.
 - Excessively large config (DoS via memory exhaustion).
 
 **Mitigations:**
@@ -502,14 +497,12 @@ reads arbitrary sectors from the virtual exFAT.
 
 **Attack vectors:**
 - Socket permissions too permissive (world-readable).
-- Process in `remotepfs` group is compromised.
+- Service user `remotepfs-nbd` is compromised.
 
 **Mitigations:**
-- Socket mode `0600` + owned `root:remotepfs` (see section 3).
-- `remotepfs` group membership is tightly controlled — only service users.
-- nbdkit `RestrictAddressFamilies=AF_UNIX` prevents outbound connections.
-- If a process in `remotepfs` group is compromised, the attacker can read
-  the virtual exFAT but cannot write to NAS files (NFS `ro` mount).
+- Socket mode `0600` + owned `remotepfs-nbd:remotepfs` (see section 3).
+- Socket access limited to service user; group membership does not grant access.
+- Group-only compromise cannot connect to socket (dir `0700`, socket `0600`).
 
 ### 7.5 Threat: nbdkit Process Compromise
 
@@ -585,13 +578,13 @@ or SCSI commands.
 | nbdkit --readonly | `ps aux | grep nbdkit | grep -- --readonly`                  |
 | NFS mount ro | `mount | grep /mnt/nas | grep -o 'ro'` (verify `ro` present) |
 | NFS nosuid,nodev,noexec | `mount | grep /mnt/nas` (verify all three flags present) |
-| NBD socket permissions | `stat -c '%a %U:%G' /run/remotepfs/nbd.sock` → `600 root:remotepfs` |
-| Socket directory permissions | `stat -c '%a %U:%G' /run/remotepfs` → `750 root:remotepfs` |
+| NBD socket permissions | `stat -c '%a %U:%G' /run/remotepfs/nbd.sock` → `600 remotepfs-nbd:remotepfs` |
+| Socket directory permissions | `stat -c '%a %U:%G' /run/remotepfs` → `700 remotepfs-nbd:remotepfs` |
 | API localhost-only | `ss -tlnp | grep 8080` → `127.0.0.1:8080`                    |
-| Config file permissions | `stat -c '%a %U:%G' /etc/remotepfs/config.toml` → `640 root:remotepfs` |
+| Config file permissions | `stat -c '%a %U:%G' /etc/remotepfs/remotepfs.conf` → `640 root:remotepfs` |
 | nbdkit service user | `systemctl show remotepfs-nbdkit | grep ^User=` → `remotepfs-nbd` |
 | nbdkit capabilities | `systemctl show remotepfs-nbdkit | grep CapabilityBoundingSet` |
-| No secrets in config | `grep -i '\(password\|secret\|key\|token\|credential\)' /etc/remotepfs/config.toml` → no output |
+| No secrets in config | `grep -i '\(password\|secret\|key\|token\|credential\)' /etc/remotepfs/remotepfs.conf` → no output |
 
 ---
 
