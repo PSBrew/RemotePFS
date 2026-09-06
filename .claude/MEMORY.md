@@ -89,13 +89,9 @@ Full articles: `research/knowledge-base/<NN>-<slug>.md`. Index:
 
 ## Skills
 
-- knowledge-base-add
-  - When: add or update a research article under `research/knowledge-base/`
-  - Quickstart:
-    - Topic-focused: “Run knowledge-base-add for ‘iSCSI vs NBD for LAN’ with sources: <urls>”
-    - Output: `research/knowledge-base/{NN}-{slug}.md`, index entry in `00-index.md`, memory bullet
-- knowledge-base-index
-  - When: rebuild/verify the KB index and memory entries from disk
-  - Quickstart:
-    - “Run knowledge-base-index to resync 00-index.md and MEMORY”
-    - Verifies missing/extra entries, numbering, links, and the cross-ref matrix
+- knowledge-base-add — add or update a KB article under `research/knowledge-base/` and update `00-index.md`
+  - Usage: `knowledge-base-add title="<Title>" sources="URL1,URL2"`
+  - Output: `research/knowledge-base/{NN}-{slug}.md`, index entry in `00-index.md`, memory bullet
+- knowledge-base-index — rebuild/verify the KB index and memory entries from disk
+  - Usage: `knowledge-base-index`
+  - Verifies missing/extra entries, numbering, links, and the cross-ref matrix
