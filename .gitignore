@@ -22,6 +22,4 @@ Thumbs.db
 # Knowledge base guards
 knowledge-base/*.html
 knowledge-base/sources/
-# Legacy archive guards
-research/*.html
 tmp/
