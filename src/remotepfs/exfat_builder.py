@@ -101,8 +101,9 @@ class _SourceStat:
 _AT_FDCWD = -100
 _AT_SYMLINK_NOFOLLOW = 0x100
 _STATX_BASIC_STATS = 0x07FF
+_STATX_ATIME = 0x0020
 _STATX_BTIME = 0x0800
-_STATX_REQUIRED = 0x0260
+_STATX_REQUIRED = 0x0240
 
 
 def _load_statx() -> Callable[..., int] | None:
@@ -145,7 +146,11 @@ def _source_stat(path: str) -> _SourceStat | None:
             )
             return _SourceStat(
                 size_bytes=result.stx_size,
-                accessed_ns=result.stx_atime.tv_sec * 1_000_000_000 + result.stx_atime.tv_nsec,
+                accessed_ns=(
+                    result.stx_atime.tv_sec * 1_000_000_000 + result.stx_atime.tv_nsec
+                    if result.stx_mask & _STATX_ATIME
+                    else modified_ns
+                ),
                 modified_ns=modified_ns,
                 created_ns=created_ns,
             )
