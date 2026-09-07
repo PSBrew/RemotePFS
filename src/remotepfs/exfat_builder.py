@@ -571,7 +571,7 @@ class ExfatBuilder:
         struct.pack_into("<HH", primary, 16, accessed_time, accessed_date)
         primary[20] = create_increment
         primary[21] = modified_increment
-        primary[22:25] = b"\0\0\0"
+        primary[22:25] = b"\x80\x80\x80"
 
     def _name_hash(self, encoded: bytes) -> int:
         """Calculate exFAT name hash using uppercase UTF-16 code units."""
