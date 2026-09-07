@@ -8,6 +8,7 @@ import struct
 import zlib
 
 from remotepfs.config import parse
+from remotepfs.consts import PARTITION_START_LBA, SECTOR_SIZE, SECTORS_PER_CLUSTER
 from remotepfs.exfat_builder import (
     _STATX_BTIME,
     _STATX_REQUIRED,
@@ -275,17 +276,25 @@ def test_hot_ranges_cover_directory_fat_without_prefetching_full_fat(tmp_path) -
     mapper = SectorMapper.from_layout(build_exfat(parse(_config(tmp_path, source.name))))
     try:
         layout = mapper.layout
-        fat_start = (layout.partition_start_lba + layout.fat_offset) * 512
-        fat_end = fat_start + layout.fat_length * 512
+        assert layout.partition_start_lba == PARTITION_START_LBA
+        fat_start = (layout.partition_start_lba + layout.fat_offset) * SECTOR_SIZE
+        fat_end = fat_start + layout.fat_length * SECTOR_SIZE
+        hot_ranges = mapper.get_hot_ranges()
         hot_fat = [
-            (offset, length)
-            for offset, length in mapper.get_hot_ranges()
-            if offset < fat_end and offset + length > fat_start
+            (offset, length) for offset, length in hot_ranges if offset < fat_end and offset + length > fat_start
+        ]
+        bitmap_start = (
+            layout.partition_start_lba + layout.cluster_heap_offset + (layout.bitmap_cluster - 2) * SECTORS_PER_CLUSTER
+        ) * SECTOR_SIZE
+        bitmap_end = bitmap_start + layout.bitmap_length
+        hot_bitmap = [
+            (offset, length) for offset, length in hot_ranges if offset < bitmap_end and offset + length > bitmap_start
         ]
         assert hot_fat
-        assert sum(length for _, length in hot_fat) < layout.fat_length * 512
-        assert all(length <= 64 * 1024 for _, length in mapper.get_hot_ranges())
-        assert all(mapper.is_metadata_region(offset, length) for offset, length in mapper.get_hot_ranges())
+        assert hot_bitmap
+        assert sum(length for _, length in hot_fat) < layout.fat_length * SECTOR_SIZE
+        assert all(length <= 64 * 1024 for _, length in hot_ranges)
+        assert all(mapper.is_metadata_region(offset, length) for offset, length in hot_ranges)
     finally:
         mapper.close()
 
