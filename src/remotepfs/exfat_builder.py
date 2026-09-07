@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .config import Config
 
+from . import source_metadata
 from .consts import (
     BOOT_REGION_SECTORS,
     BOOT_REGION_TOTAL_SECTORS,
@@ -278,7 +279,11 @@ class ExfatBuilder:
         """Copy source timestamps into one internal tree node."""
         node.modified_ns = source_stat.st_mtime_ns
         node.accessed_ns = source_stat.st_atime_ns
-        node.created_ns = getattr(source_stat, "st_birthtime_ns", None) or node.modified_ns
+        node.created_ns = (
+            getattr(source_stat, "st_birthtime_ns", None)
+            or source_metadata.source_birthtime_ns(node.source_path)
+            or node.modified_ns
+        )
 
     def _scan(self, parent: _Node, source_stat: os.stat_result | None = None) -> None:
         """Recursively scan directory without following symlinks."""

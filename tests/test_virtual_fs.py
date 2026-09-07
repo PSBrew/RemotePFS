@@ -7,6 +7,7 @@ import pickle
 import struct
 import zlib
 
+from remotepfs import source_metadata
 from remotepfs.config import parse
 from remotepfs.exfat_builder import _exfat_timestamp, build_exfat, scan_directory
 from remotepfs.sector_mapper import SectorMapper
@@ -204,6 +205,50 @@ def test_exfat_timestamp_clamps_range_and_keeps_subsecond_precision() -> None:
     assert _exfat_timestamp(minimum - 1) == _exfat_timestamp(minimum)
     assert _exfat_timestamp(maximum + 1_000_000_000) == _exfat_timestamp(maximum + 999_000_000)
     assert _exfat_timestamp(1_700_000_001_230_000_000)[2] == 123
+
+
+def test_statx_birthtime_reader_returns_kernel_birthtime(monkeypatch, tmp_path) -> None:
+    """Read birth time from statx and fall back on syscall failure."""
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"payload")
+    birth_seconds = 1_650_000_000
+
+    def fake_statx(_dirfd, _path, _flags, _mask, result) -> int:
+        result.stx_mask = source_metadata._STATX_BTIME
+        result.stx_btime.tv_sec = birth_seconds
+        result.stx_btime.tv_nsec = 123_000_000
+        return 0
+
+    monkeypatch.setattr(source_metadata, "_statx", fake_statx)
+    assert source_metadata.source_birthtime_ns(str(source)) == 1_650_000_000_123_000_000
+    monkeypatch.setattr(source_metadata, "_statx", lambda *_args: -1)
+    assert source_metadata.source_birthtime_ns(str(source)) is None
+
+
+def test_builder_uses_statx_birthtime_for_creation_field(monkeypatch, tmp_path) -> None:
+    """Use statx birth time while retaining source modification time."""
+    source = tmp_path / "game.bin"
+    source.write_bytes(b"payload")
+    modified_ns = 1_700_000_000_000_000_000
+    birth_ns = 1_600_000_000_000_000_000
+    os.utime(source, ns=(modified_ns, modified_ns))
+    monkeypatch.setattr(source_metadata, "source_birthtime_ns", lambda _path: birth_ns)
+    mapper = SectorMapper.from_layout(build_exfat(parse(_config(tmp_path, source.name))))
+    try:
+        layout = mapper.layout
+        root_offset = (
+            layout.partition_start_lba
+            + layout.cluster_heap_offset
+            + (layout.root_dir_cluster - 2) * layout.sectors_per_cluster
+        ) * 512
+        root = mapper.read_bytes(root_offset, layout.sectors_per_cluster * 512)
+        entry = root[96:128]
+        created = _exfat_timestamp(birth_ns)
+        modified = _exfat_timestamp(modified_ns)
+        assert struct.unpack_from("<HH", entry, 8) == (created[1], created[0])
+        assert struct.unpack_from("<HH", entry, 12) == (modified[1], modified[0])
+    finally:
+        mapper.close()
 
 
 def test_directory_checksums_and_bitmap_cover_allocated_clusters(tmp_path) -> None:
