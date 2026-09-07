@@ -10,6 +10,7 @@ import zlib
 from remotepfs.config import parse
 from remotepfs.exfat_builder import (
     _STATX_BTIME,
+    _STATX_REQUIRED,
     _exfat_timestamp,
     _source_stat,
     _SourceStat,
@@ -220,7 +221,7 @@ def test_statx_reader_returns_complete_snapshot_and_falls_back(monkeypatch, tmp_
     source.write_bytes(b"payload")
 
     def fake_statx(_dirfd, _path, _flags, _mask, result: _Statx) -> int:
-        result.stx_mask = _STATX_BTIME | 0x07FF
+        result.stx_mask = _STATX_REQUIRED | _STATX_BTIME
         result.stx_size = 7
         result.stx_atime.tv_sec = 1_650_000_001
         result.stx_mtime.tv_sec = 1_650_000_002
@@ -232,7 +233,7 @@ def test_statx_reader_returns_complete_snapshot_and_falls_back(monkeypatch, tmp_
     snapshot = _source_stat(str(source))
     assert snapshot is not None
     assert snapshot.size_bytes == 7
-    assert snapshot.accessed_ns == 1_650_000_001_000_000_000
+    assert snapshot.accessed_ns == 1_650_000_002_000_000_000
     assert snapshot.modified_ns == 1_650_000_002_000_000_000
     assert snapshot.created_ns == 1_650_000_000_123_000_000
     monkeypatch.setattr("remotepfs.exfat_builder._statx", lambda *_args: -1)
