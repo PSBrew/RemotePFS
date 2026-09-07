@@ -246,12 +246,31 @@ SystemCallFilter=@system-service
 | `ProtectHome=yes`         | `/home` appears empty.                              |
 | `ReadOnlyPaths=`          | Explicit read-only access to config and plugin dirs.|
 | `ReadWritePaths=`         | Only `/run/remotepfs` is writable (socket creation).|
-| `RuntimeDirectory=`       | Creates `/run/remotepfs` as private tmpfs at service start. Owned by service `User=`/`Group=`. |
+| `RuntimeDirectory=`       | Creates a systemd-managed `/run/remotepfs` directory at service start, owned by service `User=`/`Group=`. It does not guarantee tmpfs storage. |
 | `RuntimeDirectoryMode=`   | `0700` — only the service user can access the socket directory. |
 | `RestrictAddressFamilies=`| Only `AF_UNIX` allowed. No TCP/UDP socket creation. |
 | `SystemCallFilter=`       | Whitelist of syscalls. Blocks dangerous calls.      |
 
 ---
+
+### 4.3 Privileged orchestration split (v0.0.1)
+
+The orchestration process performs operations that cannot run under
+`remotepfs-nbd`: NFS `mount`, `nbd-client`, and USB ConfigFS writes. Therefore
+v0.0.1 uses two systemd units:
+
+- `remotepfs.service` runs as `root` and owns orchestration only. It allows
+  `AF_UNIX`, `AF_INET`, and `AF_INET6` because NFS mount setup needs network
+  sockets.
+- `remotepfs-nbdkit.service` remains the data-plane unit described above:
+  `User=remotepfs-nbd`, `Group=remotepfs`, `RuntimeDirectory=remotepfs`,
+  `RuntimeDirectoryMode=0700`, and `RestrictAddressFamilies=AF_UNIX`.
+
+The root unit writes `/var/lib/remotepfs/mapper.state` as `root:remotepfs`
+with mode `0640`, then starts the nbdkit unit. It never passes nbdkit
+`--user` or `--group` flags. This split preserves nbdkit least privilege
+without pretending that mount, NBD attach, and ConfigFS operations are
+unprivileged.
 
 ## 5. HTTP API Security
 
@@ -344,12 +363,12 @@ mount status, and active generation ID.
 max_request_size = 1 * 1024 * 1024  # 1 MiB
 
 # Timeouts
-request_timeout = 30   # seconds
+request_timeout = 30  # seconds
 keepalive_timeout = 5  # seconds
 
 # Headers
 response_headers = {
-    "Server": "",                     # Don't advertise server version
+    "Server": "",  # Don't advertise server version
     "X-Content-Type-Options": "nosniff",
 }
 ```
@@ -411,12 +430,12 @@ All path-like fields are validated against traversal sequences and constrained t
 ```python
 FORBIDDEN_PATTERNS = ["..", "./", "~"]
 
+
 def validate_path(path: str, field_name: str) -> None:
     for pattern in FORBIDDEN_PATTERNS:
         if pattern in path:
-            raise ConfigValidationError(
-                f"{field_name}: path traversal pattern '{pattern}' rejected"
-            )
+            raise ConfigValidationError(f"{field_name}: path traversal pattern '{pattern}' rejected")
+
 
 def validate_entry(source: str, virtual_path: str, mount_points: list[str]) -> None:
     if not any(source == mp or source.startswith(mp + "/") for mp in mount_points):

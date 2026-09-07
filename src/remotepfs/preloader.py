@@ -1,0 +1,40 @@
+"""Warm nbdkit cache with SectorMapper hot ranges."""
+
+from __future__ import annotations
+
+import subprocess
+
+
+class PreloadError(RuntimeError):
+    """Metadata preloading failed."""
+
+
+def build_nbdsh_command(socket_path: str, ranges: list[tuple[int, int]]) -> list[str]:
+    """Build nbdsh command that reads each hot range through nbdkit."""
+    commands = [f"h.pread(bytearray({length}), {offset})" for offset, length in ranges]
+    script = "; ".join(commands) or "pass"
+    return [
+        "nbdsh",
+        "-u",
+        f"nbd+unix:///?socket={socket_path}",
+        "-c",
+        script,
+    ]
+
+
+def preload(mapper, *, socket_path: str = "/run/remotepfs/nbd.sock", runner=subprocess.run) -> int:
+    """Read mapper hot ranges through nbdsh and return bytes requested.
+
+    Args:
+        mapper: SectorMapper-compatible object exposing ``get_hot_ranges``.
+        socket_path: nbdkit Unix socket path.
+        runner: Injectable subprocess runner.
+
+    Raises:
+        PreloadError: If nbdsh returns a non-zero status.
+    """
+    ranges = mapper.get_hot_ranges()
+    result = runner(build_nbdsh_command(socket_path, ranges), check=False, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise PreloadError(result.stderr.strip() or "nbdsh metadata preload failed")
+    return sum(length for _, length in ranges)

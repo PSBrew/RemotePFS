@@ -1,0 +1,25 @@
+# RemotePFS config — virtual exFAT layout (spec 07)
+
+[global]
+image_size_gib = 512           # Virtual exFAT image size (GiB)
+cluster_size_kib = 64          # Locked to 64 (PS5 / ShadowMountPlus)
+label = "REMOTEPFS"            # Volume label (11 chars max, uppercase)
+oem_name = "REMOTEPF"         # OEM name (8 chars)
+# NFS mount sources
+[[sources]]
+name = "nas1"
+server = "192.168.1.100"
+export = "/volume1/games"
+mount_point = "/mnt/nas1"
+nfs_options = "nfsvers=4.1,nconnect=2,rsize=1048576,hard,noatime,nosuid,nodev,noexec"
+
+# Virtual layout entries (flat: no '/' in virtual_path)
+[[entries]]
+virtual_path = "fps games"
+source = "/mnt/nas1/fpsgames/"
+type = "directory"
+
+[[entries]]
+virtual_path = "game.iso"
+source = "/mnt/nas1/images/ps5game.iso"
+type = "file"

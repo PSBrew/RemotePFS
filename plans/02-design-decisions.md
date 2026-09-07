@@ -198,21 +198,22 @@ PSBrew/RemotePFS (private)
 │   ├── 01-project-roadmap.md
 │   └── 02-design-decisions.md
 ├── src/remotepfs/
-│   ├── config_compiler.py    — TOML validation + generation compilation
-│   ├── exfat_builder.py      — exFAT metadata generation
-│   ├── sector_mapper.py      — sector offset to source file mapping
-│   ├── remotepfs_nbd.py      — nbdkit Python plugin (API v2)
-│   ├── nfs_manager.py        — NFS mount/unmount management
-│   ├── gadget_manager.py     — USB gadget configfs management
-│   ├── preloader.py          — metadata warming via NBD
-│   ├── api.py                — FastAPI application
-│   └── service.py            — systemd service main loop
-├── tests/
+│   ├── config.py              — TOML validation and config model
+│   ├── exfat_builder.py       — exFAT metadata generation
+│   ├── sector_mapper.py       — sector offset to source file mapping
+│   ├── remotepfs_nbd.py       — nbdkit Python plugin (API v2)
+│   ├── nbdkit_manager.py      — dedicated nbdkit unit lifecycle
+│   ├── nfs_manager.py         — NFS mount/unmount management
+│   ├── gadget_manager.py      — USB gadget ConfigFS management
+│   ├── preloader.py           — metadata warming via NBD
+│   ├── api.py                 — FastAPI application
+│   └── service.py             — privileged orchestration loop
 ├── config/
 │   ├── remotepfs.conf.example
-│   └── remotepfs.service
+│   ├── remotepfs.service
+│   └── remotepfs-nbdkit.service
+├── tests/
 ├── pyproject.toml
-├── .claude/
 └── .gitignore
 ```
 
@@ -220,6 +221,15 @@ PSBrew/RemotePFS (private)
 - Implementation repo is the single home for specs and plans (research repo copies removed 2026-09-05)
 - Research repo KB articles + reports stay frozen
 - Implementation repo is the active development repo; no code exists yet (layout is planned, per roadmap)
+## DD-09a: Privileged orchestration and unprivileged nbdkit split
+
+The initial single-unit model could not mount NFS, attach `/dev/nbd0`, and
+write USB ConfigFS while also running nbdkit as `remotepfs-nbd`. v0.0.1 keeps
+those responsibilities separate: `remotepfs.service` runs orchestration as
+root, while `remotepfs-nbdkit.service` owns the socket and runs nbdkit as
+`remotepfs-nbd:remotepfs`. The orchestrator hands off
+`/var/lib/remotepfs/mapper.state` as `root:remotepfs`, mode `0640`.
+
 
 ## DD-10: V1 Scope Summary
 

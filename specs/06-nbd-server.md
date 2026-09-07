@@ -60,19 +60,24 @@ API_VERSION = 2
 image_size = 0
 sector_mapper = None
 
+
 def config(key: str, value: str) -> None:
     """Handle config keys from nbdkit command line."""
     ...
+
 
 def config_complete() -> None:
     """Called after all config keys processed."""
     ...
 
+
 # ---------- Size & block info ----------
+
 
 def get_size(h) -> int:
     """Return virtual image size in bytes."""
     return image_size
+
 
 def block_size(h) -> tuple[int, int, int]:
     """Return (minimum, preferred, maximum) I/O sizes.
@@ -83,49 +88,64 @@ def block_size(h) -> tuple[int, int, int]:
     """
     return (512, 4096, 65536)
 
+
 def is_rotational(h) -> bool:
     """Not rotational — virtual image served from RAM + NFS."""
     return False
 
+
 # ---------- Capabilities ----------
+
 
 def can_write(h) -> bool:
     return False
 
+
 def can_trim(h) -> bool:
     return False
+
 
 def can_zero(h) -> bool:
     return False
 
+
 def can_flush(h) -> bool:
     return False
+
 
 def can_fua(h) -> int:
     """No Forced Unit Access support — read-only."""
     return nbdkit.FUA_NONE
 
+
 def can_multi_conn(h) -> bool:
     return False
+
 
 def can_extents(h) -> bool:
     """Enable extents for zero-region bulk reporting."""
     return True
 
+
 def can_cache(h) -> int:
     """nbdkit cache filter handles all caching; plugin delegates."""
     return nbdkit.CACHE_NONE
 
+
 def can_fast_zero(h) -> bool:
     return False
 
+
 # ---------- Thread model ----------
+
 
 def thread_model() -> int:
     """Single-threaded: PS5 USB gadget is synchronous request-response."""
     return nbdkit.THREAD_MODEL_SERIALIZE_REQUESTS
 
+
 # ---------- Data plane ----------
+
 
 def pread(h, buf: memoryview, offset: int, flags: int) -> None:
     """Fill buf with len(buf) bytes from virtual image at byte offset.
@@ -157,14 +177,15 @@ def pread(h, buf: memoryview, offset: int, flags: int) -> None:
 
         if mapping.kind == "file":
             file_off = mapping.offset + (chunk_start - sector * 512)
-            buf[pos:pos+chunk_size] = os.pread(mapping.source_fd, chunk_size, file_off)
+            buf[pos : pos + chunk_size] = os.pread(mapping.source_fd, chunk_size, file_off)
         elif mapping.kind == "metadata":
             meta_off = chunk_start - sector * 512
-            buf[pos:pos+chunk_size] = mapping.metadata[meta_off:meta_off+chunk_size]
+            buf[pos : pos + chunk_size] = mapping.metadata[meta_off : meta_off + chunk_size]
         elif mapping.kind == "zero":
-            buf[pos:pos+chunk_size] = b'\x00' * chunk_size
+            buf[pos : pos + chunk_size] = b"\x00" * chunk_size
 
         pos += chunk_size
+
 
 def extents(h, count: int, offset: int, flags: int) -> list:
     """Return list of (offset, length, type) extents for range [offset, offset+count).
@@ -203,6 +224,7 @@ def extents(h, count: int, offset: int, flags: int) -> list:
 
     return extents
 
+
 def close(h) -> None:
     pass
 ```
@@ -212,7 +234,7 @@ def close(h) -> None:
 ```python
 # Underlying I/O error → nbdkit.Error (maps to NBD_EIO)
 try:
-    buf[pos:pos+chunk_size] = os.pread(fd, chunk_size, file_off)
+    buf[pos : pos + chunk_size] = os.pread(fd, chunk_size, file_off)
 except OSError as e:
     raise nbdkit.Error(repr(e))
 
@@ -443,12 +465,12 @@ All packages available in Debian Bookworm/arm64 (Armbian base) and Ubuntu 24.04.
 
 ```python
 # Metrics via HTTP API endpoint
-nbd.connections = 0|1
+nbd.connections = 0 | 1
 nbd.requests_total = counter
 nbd.bytes_served = counter
 nbd.read_errors = counter
 nbd.extent_queries_total = counter
-nbd.cache_hit_rate = float    # from nbdkit cache filter stats
+nbd.cache_hit_rate = float  # from nbdkit cache filter stats
 ```
 
 `remotepfsd` monitors nbdkit process health: restarts on crash (within config reload). Process exit codes: 0 = clean shutdown, non-zero = crash → log + restart if not shutting down.

@@ -23,7 +23,7 @@ this repository.
 
 - `specs/` - canonical implementation specs 01-08.
 - `plans/` - project roadmap (8 phases) and design decisions record.
-- `knowledge-base/` - 14 markdown research articles (00-index through 13) plus `sources/` for related-project artifacts.
+- `knowledge-base/` - 15 markdown research articles (00-index through 14) plus `sources/` for related-project artifacts.
 - `src/` - service code (created during implementation).
 - `.claude/` - assistant rules and this memory.
 
@@ -44,6 +44,7 @@ this repository.
 | 11 | Atomic generation swap for config reload | Immutable gen dir tree + precomputed extent table; stable file IDs via SHA256 truncated to 32 bits | specs/07-config-system.md |
 | 12 | Metadata preloading in V1 scope | pread()-based warming (~9-10 MiB) via NBD before UDC bind | specs/04-caching-layer.md |
 | 13 | DS224+ has NO M.2 NVMe slots | Use 2.5" SATA SSDs; DS423+ for SSD caching | ValidateKB11 finding |
+| 14 | Docker is optional packaging, not hardware abstraction | Publish ARM multi-platform images, but keep Linux host responsibilities for NFS, kernel NBD, ConfigFS, UDC, modules, and cleanup; avoid privileged containers in production | knowledge-base/14-docker-sbc-deployment.md |
 
 ## Architecture Summary
 
@@ -71,6 +72,7 @@ on the exFAT device.
 - 11 Latency optimization: pread() warming, kernel tunables.
 - 12 MkPFS conventions: uv, ruff (119), pytest, Google docstrings, Conventional Commits.
 - 13 Future features: alt transports, FUSE game-folder mounting, multi-network load balancing.
+- 14 Docker SBC deployment: Docker is viable for RemotePFS user space on Linux ARM, but USB gadget, NBD, NFS, UDC, kernel modules, and lifecycle remain host contracts. Prefer host preparation and read-only bind mounts; treat `privileged: true` as prototype-only.
 
 Full articles: `knowledge-base/<NN>-<slug>.md`. Index:
 `knowledge-base/00-index.md`.

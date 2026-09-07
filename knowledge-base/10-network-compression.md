@@ -78,6 +78,7 @@ RemotePFS runs a small agent on the NAS that serves file blocks over gRPC with z
 # NAS-side agent (Python, runs on Synology DSM)
 import grpc  # or custom protobuf
 
+
 def ReadBlock(filename: str, offset: int, length: int) -> bytes:
     data = read_file_block(filename, offset, length)
     return zstd.compress(data, 1)  # Compress block before sending
@@ -112,15 +113,17 @@ At that point, implement **Option A (pre-compressed with block-level indexing)**
 
 import zstandard as zstd
 
+
 def compress_file(input_path: str, output_path: str, block_size: int = 65536):
     cctx = zstd.ZstdCompressor(level=1)
-    with open(input_path, 'rb') as fin, open(output_path, 'wb') as fout:
+    with open(input_path, "rb") as fin, open(output_path, "wb") as fout:
         while True:
             chunk = fin.read(block_size)
             if not chunk:
                 break
             compressed = cctx.compress(chunk)
             fout.write(compressed)
+
 
 # Later, to read byte range [offset, offset+length]:
 # 1. Calculate which 64 KB blocks cover the range

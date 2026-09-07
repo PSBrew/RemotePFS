@@ -103,6 +103,13 @@
 - Upstream: exFAT spec (Microsoft), FUSE (kernel.org), PS5 dumping scene (GitHub)
 - Internal: 13-future-features.md
 
+## 14 - Docker Deployment on Linux SBCs
+- What: Docker image deployment for RemotePFS user space with host-kernel NBD, NFS, ConfigFS, and USB UDC prerequisites.
+- Relevance: Evaluates whether Docker improves ARM SBC portability without hiding board-specific USB gadget and kernel requirements.
+- Gotchas: `--privileged` exposes broad host authority; `--device` and `CAP_SYS_ADMIN` may still fail for NBD/ConfigFS; Docker Desktop on macOS cannot validate SBC UDC behavior; host cleanup is required after container restart.
+- Upstream: https://docs.docker.com/build/building/multi-platform/
+- Internal: 14-docker-sbc-deployment.md
+
 ---
 
 ## Cross-Reference Matrix
@@ -122,3 +129,4 @@
 | 11-latency | 07-protocols, 08-caching, 09-loadbalancing | specs |
 | 12-mkpfs | - | all specs, project structure |
 | 13-future | 05-exFAT, 07-protocols | specs (extension points) |
+| 14-docker-sbc | 03-RadxA7S, 06-USB-gadget, 07-protocols | deployment docs, container packaging |

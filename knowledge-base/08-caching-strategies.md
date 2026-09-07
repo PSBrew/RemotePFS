@@ -88,9 +88,11 @@ POSIX_FADV_SEQUENTIAL = 2
 POSIX_FADV_WILLNEED = 3
 POSIX_FADV_DONTNEED = 4
 
+
 def prewarm_cache(fd, offset, length):
     """Tell kernel to preload region into page cache."""
     ctypes.CDLL("libc.so.6").posix_fadvise64(fd, offset, length, POSIX_FADV_WILLNEED)
+
 
 def drop_cache(fd, offset, length):
     """Tell kernel region won't be needed again (free memory)."""
@@ -165,12 +167,10 @@ class PrefetchManager:
     def on_read(self, offset: int, length: int):
         """After a PS5 read, prefetch the next window."""
         prefetch_offset = offset + length
-        prefetch_length = min(self.prefetch_window,
-                               self.file_size - prefetch_offset)
+        prefetch_length = min(self.prefetch_window, self.file_size - prefetch_offset)
         if prefetch_length > 0:
             # Non-blocking prefetch via fadvise
-            posix_fadvise(self.fd, prefetch_offset, prefetch_length,
-                          POSIX_FADV_WILLNEED)
+            posix_fadvise(self.fd, prefetch_offset, prefetch_length, POSIX_FADV_WILLNEED)
 
     def set_file(self, fd, file_size: int):
         self.fd = fd

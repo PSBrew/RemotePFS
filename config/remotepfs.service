@@ -1,0 +1,25 @@
+[Unit]
+Description=RemotePFS orchestration — virtual exFAT over NBD for PS5
+After=network-online.target nfs-client.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Mounting NFS, connecting /dev/nbd0, and ConfigFS require privilege.
+# nbdkit itself runs in the separate remotepfs-nbdkit.service unit.
+User=root
+Group=root
+ExecStart=/opt/remotepfs/source/.venv/bin/remotepfs serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadOnlyPaths=/etc/remotepfs /opt/remotepfs/source
+ReadWritePaths=/mnt /var/lib/remotepfs /sys/kernel/config/usb_gadget
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_MODULE CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target

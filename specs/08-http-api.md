@@ -261,6 +261,7 @@ File IDs (inode numbers in exFAT directory entries) are derived from `SHA256(vir
 ```python
 import hashlib
 
+
 def stable_file_id(virtual_path: str) -> int:
     """Derive stable 32-bit file ID from virtual path."""
     h = hashlib.sha256(virtual_path.encode("utf-8")).digest()
@@ -275,14 +276,15 @@ A "generation" is an immutable snapshot:
 @dataclass(frozen=True)
 class Generation:
     """Immutable, validated virtual exFAT layout."""
-    id: int                        # Monotonic generation number
-    config_hash: str               # SHA256 of config file
+
+    id: int  # Monotonic generation number
+    config_hash: str  # SHA256 of config file
     created_at: datetime
     image_size_bytes: int
     cluster_size_bytes: int
-    sector_mapper: SectorMapper    # Immutable sector → source mapping
-    open_files: dict[int, int]     # fd cache (file_id → fd)
-    metadata_buffer: bytes         # Boot sector + FAT + root dir (precomputed)
+    sector_mapper: SectorMapper  # Immutable sector → source mapping
+    open_files: dict[int, int]  # fd cache (file_id → fd)
+    metadata_buffer: bytes  # Boot sector + FAT + root dir (precomputed)
 ```
 
 The generation pointer is guarded by `threading.Lock`:
@@ -291,9 +293,11 @@ The generation pointer is guarded by `threading.Lock`:
 _active_gen: Generation | None = None
 _gen_lock = threading.Lock()
 
+
 def get_active_gen() -> Generation:
     with _gen_lock:
         return _active_gen
+
 
 def swap_gen(new: Generation) -> Generation:
     with _gen_lock:
@@ -346,6 +350,7 @@ from pydantic import BaseModel, Field
 
 # --- Pydantic models ---
 
+
 class StatusResponse(BaseModel):
     service: ServiceInfo
     gadget: GadgetInfo
@@ -354,11 +359,13 @@ class StatusResponse(BaseModel):
     config: ConfigInfo
     system: SystemInfo
 
+
 class ServiceInfo(BaseModel):
     version: str
     uptime_seconds: int
     state: str
     state_detail: str
+
 
 class GadgetInfo(BaseModel):
     udc_bound: bool
@@ -366,6 +373,7 @@ class GadgetInfo(BaseModel):
     lun_file: str | None
     lun_ro: bool
     lun_size_bytes: int | None
+
 
 class NbdInfo(BaseModel):
     connected: bool
@@ -375,6 +383,7 @@ class NbdInfo(BaseModel):
     bytes_served: int
     read_errors: int
 
+
 class NfsMountInfo(BaseModel):
     name: str
     server: str
@@ -383,6 +392,7 @@ class NfsMountInfo(BaseModel):
     mounted: bool
     state: str
 
+
 class ConfigInfo(BaseModel):
     path: str
     last_loaded: datetime
@@ -390,10 +400,12 @@ class ConfigInfo(BaseModel):
     game_count: int
     valid: bool
 
+
 class SystemInfo(BaseModel):
     memory_used_mib: float
     page_cache_mib: float
     cpu_percent: float
+
 
 class ConfigReplaceResponse(BaseModel):
     status: str
@@ -401,13 +413,16 @@ class ConfigReplaceResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     reload_time_ms: int
 
+
 class ValidationErrorDetail(BaseModel):
     field: str
     message: str
 
+
 class ConfigInvalidResponse(BaseModel):
     status: str
     errors: list[ValidationErrorDetail]
+
 
 class ReloadResponse(BaseModel):
     status: str
@@ -415,9 +430,11 @@ class ReloadResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     reload_time_ms: int
 
+
 class HealthResponse(BaseModel):
     status: str
     uptime_seconds: int
+
 
 class GameEntry(BaseModel):
     virtual_path: str
@@ -426,18 +443,23 @@ class GameEntry(BaseModel):
     entry_count: int | None = None
     total_size_bytes: int | None = None
 
+
 class GamesResponse(BaseModel):
     games: list[GameEntry]
+
 
 class ErrorBody(BaseModel):
     code: str
     message: str
     details: dict | None = None
 
+
 class ErrorResponse(BaseModel):
     error: ErrorBody
 
+
 # --- App ---
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -445,6 +467,7 @@ async def lifespan(app: FastAPI):
     await app.state.service.startup()
     yield
     await app.state.service.shutdown()
+
 
 def create_app(service: "RemotePfsService") -> FastAPI:
     """Create FastAPI app with service context injected via app.state."""
@@ -456,6 +479,7 @@ def create_app(service: "RemotePfsService") -> FastAPI:
     app.state.service = service
     _register_routes(app)
     return app
+
 
 def _register_routes(app: FastAPI) -> None:
     @app.get("/api/status", response_model=StatusResponse)
@@ -476,8 +500,7 @@ def _register_routes(app: FastAPI) -> None:
         if len(body) > 1_048_576:
             raise HTTPException(
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                detail={"code": "PAYLOAD_TOO_LARGE",
-                        "message": "Config body exceeds 1 MiB limit"},
+                detail={"code": "PAYLOAD_TOO_LARGE", "message": "Config body exceeds 1 MiB limit"},
             )
         if "toml" in content_type:
             config_text = body.decode("utf-8")
@@ -486,13 +509,13 @@ def _register_routes(app: FastAPI) -> None:
         else:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-                detail={"code": "UNSUPPORTED_MEDIA_TYPE",
-                        "message": "Content-Type must be application/toml or application/json"},
+                detail={
+                    "code": "UNSUPPORTED_MEDIA_TYPE",
+                    "message": "Content-Type must be application/toml or application/json",
+                },
             )
         try:
-            result = await run_in_threadpool(
-                app.state.service.replace_config, config_text
-            )
+            result = await run_in_threadpool(app.state.service.replace_config, config_text)
         except ConfigValidationError as exc:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -526,9 +549,7 @@ def _register_routes(app: FastAPI) -> None:
         """Catch-all for unhandled errors — return structured 500."""
         return JSONResponse(
             status_code=500,
-            content=ErrorResponse(
-                error=ErrorBody(code="INTERNAL_ERROR", message=str(exc))
-            ).model_dump(),
+            content=ErrorResponse(error=ErrorBody(code="INTERNAL_ERROR", message=str(exc))).model_dump(),
         )
 ```
 
@@ -537,6 +558,7 @@ def _register_routes(app: FastAPI) -> None:
 ```python
 # server.py
 import uvicorn
+
 
 def run_api(service: "RemotePfsService", host: str = "127.0.0.1", port: int = 8080) -> None:
     """Run FastAPI under uvicorn — blocks until shutdown."""

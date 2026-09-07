@@ -1,62 +1,81 @@
+<div align="center">
+
 # RemotePFS
 
-Linux SBC service that emulates an exFAT USB mass storage device via USB
-OTG, presenting game files from a remote Synology NAS to a jailbroken
-PlayStation 5 via ShadowMountPlus.
+**Expose read-only NAS game files to PS5 as virtual exFAT USB storage.**
 
-The SBC (Radxa Cubie A7S) builds a virtual exFAT filesystem from a NAS
-folder containing multiple games, serves sectors on-the-fly via NBD (nbdkit
-Python plugin), and exposes `/dev/nbd0` as a USB mass storage LUN to the
-PS5. No `.exfat` image files, no loopback mounts.
+[![Python](https://img.shields.io/badge/python-3.11%2B-2563EB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-GPL--3.0-3B82F6?style=for-the-badge)](LICENSE)
 
-> **This repository is PRIVATE.** Do not push, mirror, or expose publicly.
-> The owner will make it public after a stable release.
+[Architecture](specs/01-service-architecture.md) · [Configuration](docs/configuration.md) · [SBC install](docs/sbc-installation.md) · [Troubleshooting](docs/troubleshooting.md)
 
-## Status
+</div>
 
-Specification and planning complete. Implementation follows the 8-phase
-roadmap in `plans/01-project-roadmap.md`: Prerequisites, Config System,
-NBD Server, HTTP API, USB Gadget Bind, Metadata Preloading, E2E Testing,
-Hardening. No implementation code yet.
+## Why
 
-## Structure
+RemotePFS presents files from one or more NFS mounts through a virtual, read-only exFAT filesystem. An SBC serves that filesystem through a local nbdkit Python plugin, a Linux NBD block device, and a USB mass-storage gadget. No `.exfat` image, loop device, or game copy is required.
 
-```
-.
-├── README.md               # This file
-├── .gitignore
-├── .claude/                # Assistant rules, skills, and project memory
-│   ├── MEMORY.md
-│   ├── rules/              # style, html-reporting, tmp-usage
-│   └── skills/             # knowledge-base-add, knowledge-base-index, fix-tests, html-reporting
-├── specs/                  # Implementation specs (canonical)
-│   ├── 01-service-architecture.md
-│   ├── 02-protocol-choice.md
-│   ├── 03-usb-gadget-config.md
-│   ├── 04-caching-layer.md
-│   ├── 05-security-model.md
-│   ├── 06-nbd-server.md
-│   ├── 07-config-system.md
-│   └── 08-http-api.md
-├── plans/
-│   ├── 01-project-roadmap.md
-│   └── 02-design-decisions.md
-├── knowledge-base/         # 14 research articles (specification phase)
-│   ├── 00-index.md         # Topic index and cross-references
-│   └── sources/            # Related-project source artifacts (on demand)
-└── src/                    # Service code (created during implementation)
+## Features
+
+- Config-driven virtual root with files and recursively scanned directories.
+- NFS v4.1 read-only sources with hardened mount options.
+- Virtual exFAT metadata generated in memory.
+- nbdkit Python API v2 over a Unix socket.
+- Read-only enforcement at NFS, NBD, and USB gadget layers.
+- FastAPI localhost control plane with compile/activate generations.
+- Metadata preload support through nbdsh.
+- macOS-compatible unit-test and software-development path; SBC hardware is required for USB/NBD integration.
+
+## Install
+
+RemotePFS targets a Linux SBC. macOS can run unit tests and software-only API checks, but cannot provide ConfigFS, `/dev/nbd0`, nbdkit, or a USB Device Controller.
+
+```bash
+uv sync
+uv run --frozen pytest
+uv run --frozen ruff format .
+uv run --frozen ruff check .
 ```
 
-Start points:
+See [SBC installation](docs/sbc-installation.md) for Debian/Ubuntu/Armbian deployment.
 
-- Implementation overview: `specs/01-service-architecture.md`
-- Roadmap and phases: `plans/01-project-roadmap.md`
-- Why decisions were made: `plans/02-design-decisions.md`
-- Background research: `knowledge-base/00-index.md`
+## Commands
 
-## Conventions
+```bash
+cp config/remotepfs.conf.example /tmp/remotepfs.conf
+# Edit /tmp/remotepfs.conf with real NFS paths, then:
+remotepfs compile /tmp/remotepfs.conf
+remotepfs serve --config /etc/remotepfs/remotepfs.conf
+curl http://127.0.0.1:8080/api/health
+```
 
-- Follow the PSBrew/MkPFS coding style: see `knowledge-base/12-mkpfs-conventions.md`.
-- Use Conventional Commits for git messages.
-- Python 3.11+, uv, Ruff (line-length=119), pytest, Google docstrings.
-- No em dashes. `PFS` capitalization follows mkpfs rules.
+API endpoints:
+
+- `GET /api/health`, `/api/status`, `/api/config`, `/api/games`
+- `POST /api/config/compile`, `/api/config/activate`, `/api/config/reload`, `/api/eject`
+- `PUT /api/config`
+
+## Documentation
+
+- [Configuration reference](docs/configuration.md)
+- [SBC installation and hardware checklist](docs/sbc-installation.md)
+- [Troubleshooting and verification](docs/troubleshooting.md)
+- [Canonical specifications](specs/)
+- [Design decisions](plans/02-design-decisions.md)
+
+## Sponsor
+
+RemotePFS is a community project for reproducible, read-only PS5 storage workflows.
+
+## Contributors
+
+Contributions must preserve read-only behavior, update tests for observable contracts, and follow Ruff and Google-style docstrings.
+
+## Related projects
+
+- [MkPFS](https://github.com/PSBrew/MkPFS) — project conventions reference.
+- [nbdkit](https://github.com/libguestfs/nbdkit) — NBD server and filter framework.
+
+## Contributing
+
+Use Conventional Commits. Run `uv run --frozen pytest` and `uv run --frozen ruff check .` before opening a change. Hardware-dependent validation must include SBC command output and PS5 observations; never claim those checks from macOS.

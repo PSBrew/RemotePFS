@@ -246,6 +246,7 @@ for item in items:
 # After
 result = {item.id: item.name for item in items}
 
+
 # SIMPLIFY: Nested conditionals with early return
 # Before
 def process(data):
@@ -259,6 +260,8 @@ def process(data):
             raise ValueError("Invalid data")
     else:
         raise TypeError("Data is None")
+
+
 # After
 def process(data):
     if data is None:
