@@ -20,7 +20,7 @@ global:
   cluster_size_kib: 64
   label: REMOTEPFS
   oem_name: REMOTEPF
-
+  usb_port: auto
 # Protocol-backed sources
 sources:
   - name: nas1
@@ -66,7 +66,7 @@ entries:
 | `cluster_size_kib` | u64 | 64 | Cluster size in KiB. Locked to 64 for PS5 compatibility (ShadowMountPlus). |
 | `label` | str | "RemotePFS" | Volume label, uppercase, 11 chars max |
 | `oem_name` | str | "REMOTEPFS" | OEM name, 8 chars |
-
+| `usb_port` | str | `"auto"` | UDC selector. `auto` chooses deterministic fastest device-capable UDC; explicit value selects UDC by name. |
 #### `sources[]`
 
 | Field | Type | Required | Description |
@@ -93,12 +93,14 @@ entries:
 2. `cluster_size_kib` must be exactly 64 (PS5 requirement)
 3. `label`: length <= 11, uppercase ASCII only
 4. `oem_name`: length == 8, uppercase ASCII only
-5. Every `entries[].source` path must be under a valid `sources[].mount_point`
-6. `entries[].virtual_path` must be unique (no duplicates)
-7. `entries[].virtual_path` must not contain `/` (flat root directory in V1; subdirectories are collected under the virtual_path directory entry)
-8. At least one `sources` and one `entries` item must exist
-9. Source names must be unique
-
+5. `usb_port` must be `auto` or a non-empty UDC name without `/`
+6. Automatic UDC selection must consider only device-capable controllers, rank by reported maximum speed, and use deterministic name ordering for ties
+7. Selection must raise a clear error when no suitable UDC exists
+8. Every `entries[].source` path must be under a valid `sources[].mount_point`
+9. Every `entries[].virtual_path` must be unique (no duplicates)
+10. Every `entries[].virtual_path` must not contain `/` (flat root directory in V1; subdirectories are collected under the virtual_path directory entry)
+11. At least one `sources` and one `entries` item must exist
+12. Source names must be unique
 ## Config Parsing & Validation
 
 ### ConfigManager
@@ -129,6 +131,7 @@ class Config:
     cluster_size_kib: int
     label: str
     oem_name: str
+    usb_port: str
     sources: list[SourceConfig]
     entries: list[EntryConfig]
 

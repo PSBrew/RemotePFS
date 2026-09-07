@@ -37,6 +37,7 @@ def test_parse_valid_config() -> None:
     assert cfg.cluster_size_kib == 64
     assert cfg.label == "REMOTEPFS"
     assert cfg.oem_name == "REMOTEPF"
+    assert cfg.usb_port == "auto"
     assert len(cfg.sources) == 1
     assert cfg.sources[0].name == "nas1"
     assert len(cfg.entries) == 2

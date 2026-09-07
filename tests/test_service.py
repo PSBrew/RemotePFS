@@ -138,7 +138,7 @@ entries:
         def __init__(self) -> None:
             self.bound = False
 
-        def bind(self) -> None:
+        def bind(self, udc: str = "auto", **kwargs) -> None:
             self.bound = True
 
         def unbind(self) -> None:

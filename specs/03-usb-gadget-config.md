@@ -221,13 +221,70 @@ ls /sys/class/udc/
 # fc000000.usb   # Typically the USB-C port (OTG-capable)
 ```
 
-The script should auto-detect the correct UDC. On multi-UDC SBCs, the USB-C
-port with OTG support is the correct one for gadget mode.
+Automatic selection must not use `ls /sys/class/udc/ | head -1`. It must inspect
+each candidate's device-mode capability and reported maximum speed, then choose
+the highest-speed candidate with deterministic name ordering for ties.
 
 ```bash
-UDC=$(ls /sys/class/udc/ | head -1)
-echo "$UDC" > /sys/kernel/config/usb_gadget/remotepfs/UDC
+for udc in /sys/class/udc/*; do
+    name=$(basename "$udc")
+    printf '%s: ' "$name"
+    cat "$udc/maximum_speed" 2>/dev/null || echo unknown
+done
 ```
+
+### Configurable UDC selection
+
+Configuration must expose a `usb_port` setting:
+
+- `auto` selects a device-capable UDC automatically.
+- An explicit UDC name selects that controller.
+- Automatic selection must inspect available UDCs, reject host-only controllers,
+  prefer controllers that support OTG/device mode, then prefer highest
+  negotiated USB speed.
+- Selection must fail clearly when no suitable UDC exists.
+
+List candidate controllers and current link speeds on the SBC:
+
+```bash
+ls -1 /sys/class/udc/
+for udc in /sys/class/udc/*; do
+    name=$(basename "$udc")
+    printf '%s: ' "$name"
+    cat "$udc/current_speed" 2>/dev/null || echo unknown
+done
+```
+
+The configuration example and SBC installation guide must show how to choose
+`auto` or copy an explicit UDC name from this output. This remains an
+implementation task for `gadget_manager.py`, including capability checks and
+tests with mocked sysfs trees.
+
+### 5.1 Radxa Cubie A7S port selection
+On Radxa Cubie A7S, `4100000.udc-controller` is the sunxi USB device
+controller attached to the USB-C OTG/device path. The USB 3.x connector is
+host-only on the tested Bullseye image: its DWC3 gadget mode is disabled
+(`CONFIG_USB_DWC3_GADGET` is not set). Connect the host computer or PS5 to
+the USB-C OTG/device connector, not the USB 3.x host connector.
+
+After binding, verify host attachment:
+
+```bash
+cat /sys/class/udc/4100000.udc-controller/state
+```
+
+Expected value is `configured` after a Windows or PS5 host enumerates the
+gadget. `not attached` means the UDC is bound internally but no USB host is
+connected to the device-capable port, cable, or path.
+
+### 5.2 Idempotent teardown
+
+Before rebuilding an existing gadget, unbind the UDC, clear
+`functions/mass_storage.0/lun.0/file`, unlink the function from the
+configuration, and remove the remaining ConfigFS gadget directories. This
+prevents stale LUN ownership from causing `EBUSY` when `lun.0/ro` or `file`
+is configured during a service restart. `bind()` must perform this cleanup
+when a stale gadget tree already exists.
 
 ---
 

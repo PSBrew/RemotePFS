@@ -52,12 +52,9 @@ class NbdkitManager:
             self.socket_path,
             "--pidfile",
             self.pidfile,
-            "--unix-mode=0600",
             "--exit-with-parent",
             "--threads",
             "1",
-            "--max-request",
-            "98304",
             "--readonly",
             "--filter=blocksize",
             "--filter=cache",
@@ -79,9 +76,12 @@ class NbdkitManager:
             raise NbdkitError(f"mapper state must exist at {self.state_path} before systemd start")
         if foreground:
             raise NbdkitError("foreground nbdkit requires direct deployment, not systemd unit")
-        result = self._runner(["systemctl", "start", self.unit_name], check=False, capture_output=True, text=True)
-        if result.returncode != 0:
-            raise NbdkitError(result.stderr.strip() or "failed to start nbdkit systemd unit")
+        self._runner(
+            ["systemctl", "start", "--no-block", self.unit_name],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
         deadline = time.monotonic() + 10
         while not Path(self.socket_path).exists():
             if time.monotonic() >= deadline:
@@ -89,15 +89,19 @@ class NbdkitManager:
             time.sleep(0.05)
 
     def stop(self) -> None:
-        """Stop dedicated nbdkit unit."""
+        """Stop dedicated nbdkit unit without waiting for child shutdown."""
         self.disconnect()
-        self._runner(["systemctl", "stop", self.unit_name], check=False, capture_output=True, text=True)
+        self._runner(
+            ["systemctl", "stop", "--no-block", self.unit_name],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
 
     def connect(self, device: str = "/dev/nbd0") -> None:
         """Connect kernel NBD client read-only through Unix socket."""
         result = self._runner(
-            ["nbd-client", "-U", self.socket_path, "-r", device],
-            check=False,
+            ["nbd-client", "-u", self.socket_path, "-R", "-L", device],
             capture_output=True,
             text=True,
         )
@@ -106,7 +110,7 @@ class NbdkitManager:
 
     def disconnect(self, device: str = "/dev/nbd0") -> None:
         """Disconnect kernel NBD client if available."""
-        self._runner(["nbd-client", "-d", device], check=False, capture_output=True, text=True)
+        self._runner(["nbd-client", "-L", "-d", device], check=False, capture_output=True, text=True)
 
     def is_ready(self) -> bool:
         """Return whether nbdkit Unix socket exists."""

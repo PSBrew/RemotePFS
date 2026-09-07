@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import grp
 import json
+import logging
 import os
 import pickle
 import platform
@@ -21,6 +22,8 @@ from .config import Config, ConfigError, load, parse, validate
 from .gadget_manager import GadgetManager
 from .mount_manager import MountManager
 from .nbdkit_manager import NbdkitManager
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -71,6 +74,7 @@ class RemotePfsService:
             self.state = "running"
             self.state_detail = "serving" if platform.system() == "Linux" else "software_only_macos"
         except (ConfigError, OSError, RuntimeError) as exc:
+            logger.exception("RemotePFS startup failed")
             self.state = "degraded"
             self.state_detail = str(exc)
 
@@ -80,16 +84,20 @@ class RemotePfsService:
             self.gadget.unbind()
             self.nbd.stop()
         state_path = self.state_path
-        Path(state_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(state_path).write_bytes(pickle.dumps(generation.mapper.to_state()))
-        os.chown(state_path, 0, grp.getgrnam("remotepfs").gr_gid)
-        Path(state_path).chmod(0o640)
+        state_file = Path(state_path)
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary_state = state_file.with_name(f"{state_file.name}.tmp.{os.getpid()}")
+        payload = pickle.dumps(generation.mapper.to_state(), protocol=pickle.HIGHEST_PROTOCOL)
+        temporary_state.write_bytes(payload)
+        os.chown(temporary_state, 0, grp.getgrnam("remotepfs").gr_gid)
+        temporary_state.chmod(0o640)
+        os.replace(temporary_state, state_file)
         self.nbd.start(image_size=generation.config.image_size_bytes, mapper_state=state_path)
         from .preloader import preload
 
         preload(generation.mapper, socket_path=self.nbd.socket_path)
         self.nbd.connect()
-        self.gadget.bind()
+        self.gadget.bind(udc=generation.config.usb_port)
 
     async def shutdown(self) -> None:
         """Stop gadget and NBD resources, ignoring absent hardware on macOS."""

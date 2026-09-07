@@ -55,7 +55,7 @@ class SectorMapper:
         """Resolve zero-based sector to metadata, file, or zero."""
         if sector < 0 or sector >= self.total_sectors:
             raise ValueError(f"sector outside image: {sector}")
-        metadata = self.layout.metadata.get(sector)
+        metadata = self._metadata_sector(sector)
         if metadata is not None:
             return SectorMapping(kind="metadata", metadata=metadata)
         for mapping in self.layout.file_mappings:
@@ -66,6 +66,51 @@ class SectorMapper:
                 source_offset = (sector - start) * SECTOR_SIZE
                 return SectorMapping(kind="file", source_fd=fd, offset=source_offset)
         return SectorMapping(kind="zero")
+
+    def _metadata_sector(self, sector: int) -> bytes | None:
+        """Return stored or lazily generated metadata sector."""
+        direct = self.layout.metadata.get(sector)
+        if direct is not None:
+            return direct
+        fat_start = PARTITION_START_LBA + self.layout.fat_offset
+        if fat_start <= sector < fat_start + self.layout.fat_length:
+            return self._fat_sector(sector - fat_start)
+        bitmap_start = self._file_start_sector(FileMapping(self.layout.bitmap_cluster, 1, "", 0, ""))
+        bitmap_sectors = (self.layout.bitmap_length + SECTOR_SIZE - 1) // SECTOR_SIZE
+        if bitmap_start <= sector < bitmap_start + bitmap_sectors:
+            return self._bitmap_sector(sector - bitmap_start)
+        return None
+
+    def _fat_sector(self, sector_index: int) -> bytes:
+        """Generate one FAT sector from compact allocated cluster runs."""
+        data = bytearray(SECTOR_SIZE)
+        first_entry = sector_index * (SECTOR_SIZE // 4)
+        for index in range(SECTOR_SIZE // 4):
+            cluster = first_entry + index
+            value = 0
+            if cluster == 0:
+                value = 0xFFFFFFF8
+            elif cluster == 1:
+                value = 0xFFFFFFFF
+            else:
+                for start, count in self.layout.allocated_ranges:
+                    if start <= cluster < start + count:
+                        value = 0xFFFFFFFF if cluster == start + count - 1 else cluster + 1
+                        break
+            data[index * 4 : index * 4 + 4] = value.to_bytes(4, "little")
+        return bytes(data)
+
+    def _bitmap_sector(self, sector_index: int) -> bytes:
+        """Generate one allocation bitmap sector from compact cluster runs."""
+        data = bytearray(SECTOR_SIZE)
+        first_cluster = 2 + sector_index * SECTOR_SIZE * 8
+        for start, count in self.layout.allocated_ranges:
+            begin = max(start, first_cluster)
+            end = min(start + count, first_cluster + SECTOR_SIZE * 8)
+            for cluster in range(begin, end):
+                bit = cluster - first_cluster
+                data[bit // 8] |= 1 << (bit % 8)
+        return bytes(data)
 
     def read(self, offset: int, destination: bytearray | memoryview | None = None) -> bytes | None:
         """Read virtual bytes into destination or return immutable bytes.
@@ -132,19 +177,19 @@ class SectorMapper:
         """Return byte ranges precomputed for metadata warming."""
         return list(self.layout.hot_ranges)
 
+    def read_metadata(self, offset: int, destination: bytearray | memoryview) -> None:
+        """Read metadata-only range into writable destination."""
+        if not self.is_metadata_region(offset, len(destination)):
+            raise ValueError("range contains non-metadata sectors")
+        self.read(offset, destination)
+
     def is_metadata_region(self, offset: int, length: int) -> bool:
         """Return whether every covered sector is in metadata."""
         if length <= 0:
             return True
         first = offset // SECTOR_SIZE
         last = (offset + length - 1) // SECTOR_SIZE
-        return all(self.layout.metadata.get(sector) is not None for sector in range(first, last + 1))
-
-    def read_metadata(self, offset: int, destination: bytearray | memoryview) -> None:
-        """Read metadata-only range into writable destination."""
-        if not self.is_metadata_region(offset, len(destination)):
-            raise ValueError("range contains non-metadata sectors")
-        self.read(offset, destination)
+        return all(self._metadata_sector(sector) is not None for sector in range(first, last + 1))
 
     def close(self) -> None:
         """Close lazily opened source descriptors."""

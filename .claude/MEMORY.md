@@ -73,6 +73,7 @@ on the exFAT device.
 - 12 MkPFS conventions: uv, ruff (119), pytest, Google docstrings, Conventional Commits.
 - 13 Future features: alt transports, FUSE game-folder mounting, multi-network load balancing.
 - 14 Docker SBC deployment: Docker is viable for RemotePFS user space on Linux ARM, but USB gadget, NBD, NFS, UDC, kernel modules, and lifecycle remain host contracts. Prefer host preparation and read-only bind mounts; treat `privileged: true` as prototype-only.
+- 15 Cubie A7S USB OTG field notes: working RemotePFS connection used first USB-C connector farther from Ethernet, also board-power connector; SBC reports `current_speed=high-speed` and `maximum_speed=high-speed`, confirming USB 2.0 High-Speed (480 Mb/s signaling), not USB 3.x. Read `/sys/class/udc/*/{current_speed,maximum_speed,state}` and ConfigFS `remotepfs/UDC` to identify negotiated speed and selected UDC. `4100000.udc-controller` registers as `sunxi_usb_udc`; `6a00000.xhci2-controller` resolves below `12.usbc2` and registers as `dwc3-gadget`, but do not bind alternate UDC ad hoc. Teardown order: NBD disconnect, clear LUN file, unbind UDC, unlink function, remove ConfigFS tree. _(context: knowledge-base/15-cubie-a7s-usb-otg-field-notes.md, field validation 2026-09-07)_
 
 Full articles: `knowledge-base/<NN>-<slug>.md`. Index:
 `knowledge-base/00-index.md`.

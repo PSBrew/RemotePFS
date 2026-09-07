@@ -10,16 +10,16 @@ Type=simple
 User=root
 Group=root
 ExecStart=/opt/remotepfs/source/.venv/bin/remotepfs serve
+ExecStartPre=/sbin/modprobe nbd
+ExecStartPre=/sbin/modprobe libcomposite
+ExecStartPre=/sbin/modprobe usb_f_mass_storage
 Restart=on-failure
 RestartSec=5
-NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
 ReadOnlyPaths=/etc/remotepfs /opt/remotepfs/source
-ReadWritePaths=/mnt /var/lib/remotepfs /sys/kernel/config/usb_gadget
+ReadWritePaths=/mnt /var/lib/remotepfs /sys/kernel/config
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-CapabilityBoundingSet=CAP_SYS_ADMIN CAP_SYS_MODULE CAP_NET_ADMIN
-
 [Install]
 WantedBy=multi-user.target

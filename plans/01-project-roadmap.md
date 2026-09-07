@@ -240,15 +240,23 @@ Design decisions document at `plans/02-design-decisions.md`.
    - `file=/dev/nbd0`, `ro=1`, `nofua=1`, `stall=1`, `forced_eject=1`
 
 3. **UDC detection and bind:**
-   - Auto-detect UDC: `ls /sys/class/udc/ | head -1`
+   - Never select with `ls /sys/class/udc/ | head -1`.
+   - Auto-selection inspects device-mode capability and reported maximum speed,
+     then selects fastest candidate with deterministic name ordering for ties.
+   - On Radxa Cubie A7S, use the USB-C OTG/device connector; the USB 3.x connector is host-only on the tested kernel.
    - Bind: `echo <udc> > /sys/kernel/config/usb_gadget/remotepfs/UDC`
-   - Verify: `cat /sys/kernel/config/usb_gadget/remotepfs/UDC` is non-empty
+   - Verify: UDC value is non-empty and `/sys/class/udc/<udc>/state` becomes `configured` when a host is connected.
+   - Add `global.usb_port`, accepting `auto` or an explicit UDC name.
+   - For `auto`, inspect UDC capability and current speed, reject host-only
+     controllers, and select fastest OTG/device-capable controller.
+   - Document SBC commands for listing UDC names and current speeds.
+   - Test selection and failure cases with mocked sysfs trees.
 
 4. **Gadget manager** (`gadget_manager.py`):
    - `bind()`: Full setup sequence
-   - `unbind()`: Graceful teardown (echo "" > UDC, remove ConfigFS entries)
+   - `unbind()`: Graceful teardown (echo "" > UDC, clear LUN file, unlink function, remove ConfigFS tree)
    - `status()`: Check bind state, UDC name
-   - Idempotent: skip steps already done
+   - Idempotent: stale ConfigFS trees are removed before LUN attributes are written
 
 5. **End-to-end attach flow:**
    ```

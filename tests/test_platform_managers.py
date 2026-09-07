@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from remotepfs.gadget_manager import GadgetManager
+from remotepfs.gadget_manager import GadgetError, GadgetManager
 from remotepfs.mount_manager import MountError, MountManager
 from remotepfs.nbdkit_manager import NbdkitManager
 from remotepfs.preloader import build_nbdsh_command
@@ -18,6 +18,14 @@ def test_nbdkit_command_has_required_read_only_filter_order() -> None:
     command = manager.command(image_size=1024, mapper_state="/run/remotepfs/mapper.state")
     assert "--readonly" in command
     assert command[0:2] == ["nbdkit", "-U"]
+    assert command[command.index("--pidfile") : command.index("--pidfile") + 2] == [
+        "--pidfile",
+        "/run/remotepfs/nbdkit.pid",
+    ]
+    assert "--exit-with-parent" in command
+    threads_index = command.index("--threads")
+    assert command[threads_index : threads_index + 2] == ["--threads", "1"]
+    assert "--unix-mode=0600" not in command
     assert command[command.index("python") + 1] == "/opt/remotepfs/source/src/remotepfs/remotepfs_nbd.py"
     assert command[command.index("python") + 2 :] == [
         "image_size=1024",
@@ -47,27 +55,127 @@ def test_nbdkit_start_hands_off_existing_state_to_systemd(tmp_path) -> None:
 
     manager = NbdkitManager(socket_path=str(socket), state_path=str(state), runner=runner)
     manager.start(image_size=1, mapper_state=str(state))
-    assert calls == [["systemctl", "start", "remotepfs-nbdkit.service"]]
+    assert calls == [["systemctl", "start", "--no-block", "remotepfs-nbdkit.service"]]
 
 
-def test_gadget_manager_writes_configfs_values(tmp_path) -> None:
+def test_nbdkit_disconnect_uses_legacy_kernel_control(tmp_path) -> None:
+    calls: list[list[str]] = []
+
+    def runner(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stderr="")
+
+    manager = NbdkitManager(socket_path=str(tmp_path / "nbd.sock"), runner=runner)
+    manager.disconnect()
+
+    assert calls == [["nbd-client", "-L", "-d", "/dev/nbd0"]]
+
+
+def test_gadget_manager_writes_configfs_values(tmp_path, monkeypatch) -> None:
     configfs = tmp_path / "usb_gadget"
     udc = tmp_path / "udc"
     (udc / "test.udc").mkdir(parents=True)
+    (udc / "test.udc" / "state").write_text("not attached")
     serial = tmp_path / "serial"
     manager = GadgetManager(configfs_root=str(configfs), udc_root=str(udc), serial_path=str(serial))
+    writes = []
+    original_write = manager._write
+
+    def record_write(path, value):
+        writes.append(path)
+        original_write(path, value)
+
+    monkeypatch.setattr(manager, "_write", record_write)
     bound = manager.bind(lun_file="/dev/nbd0")
     assert bound == "test.udc"
     assert (configfs / "remotepfs" / "idVendor").read_text() == "0x1d6b"
     assert (configfs / "remotepfs" / "functions/mass_storage.0/lun.0/ro").read_text() == "1"
+    lun_file = configfs / "remotepfs/functions/mass_storage.0/lun.0/file"
+    assert writes.index(configfs / "remotepfs/functions/mass_storage.0/lun.0/ro") < writes.index(lun_file)
+    assert not (configfs / "remotepfs/functions/mass_storage.0/lun.0/forced_eject").exists()
+    assert manager.status()["udc_bound"] is True
+
+    writes.clear()
+    manager.unbind()
+    assert writes[0].name == "UDC"
+    assert writes[-1].name == "file"
+    assert not (configfs / "remotepfs").exists()
+
+    manager.bind(lun_file="/dev/nbd0")
     assert manager.status()["udc_bound"] is True
 
 
 def test_preloader_command_contains_each_hot_range() -> None:
     command = build_nbdsh_command("/run/remotepfs/nbd.sock", [(0, 512), (4096, 1024)])
     assert command[:4] == ["nbdsh", "-u", "nbd+unix:///?socket=/run/remotepfs/nbd.sock", "-c"]
-    assert "h.pread(bytearray(512), 0)" in command[-1]
-    assert "h.pread(bytearray(1024), 4096)" in command[-1]
+    assert "h.pread(512, 0)" in command[-1]
+    assert "h.pread(1024, 4096)" in command[-1]
+
+
+def test_gadget_manager_auto_selects_fastest_device_udc(tmp_path) -> None:
+    udc_root = tmp_path / "udc"
+    slow = udc_root / "slow"
+    fast = udc_root / "fast"
+    for entry, speed in ((slow, "high-speed"), (fast, "super-speed")):
+        entry.mkdir(parents=True)
+        (entry / "state").write_text("not attached")
+        (entry / "maximum_speed").write_text(speed)
+
+    manager = GadgetManager(configfs_root=str(tmp_path / "configfs"), udc_root=str(udc_root))
+    assert manager._select_udc("auto") == "fast"
+
+
+def test_gadget_manager_auto_selection_breaks_speed_ties_by_name(tmp_path) -> None:
+    udc_root = tmp_path / "udc"
+    for name in ("zeta", "alpha"):
+        entry = udc_root / name
+        entry.mkdir(parents=True)
+        (entry / "state").write_text("not attached")
+        (entry / "current_speed").write_text("super speed")
+
+    manager = GadgetManager(configfs_root=str(tmp_path / "configfs"), udc_root=str(udc_root))
+    assert manager._select_udc("auto") == "alpha"
+
+
+def test_gadget_manager_auto_selection_uses_current_speed_only(tmp_path) -> None:
+    udc_root = tmp_path / "udc"
+    entry = udc_root / "current-only"
+    entry.mkdir(parents=True)
+    (entry / "state").write_text("not attached")
+    (entry / "current_speed").write_text("super speed plus")
+
+    manager = GadgetManager(configfs_root=str(tmp_path / "configfs"), udc_root=str(udc_root))
+    assert manager._select_udc("auto") == "current-only"
+
+
+def test_gadget_manager_auto_selection_rejects_empty_udc_root(tmp_path) -> None:
+    udc_root = tmp_path / "udc"
+    udc_root.mkdir()
+    manager = GadgetManager(configfs_root=str(tmp_path / "configfs"), udc_root=str(udc_root))
+    with pytest.raises(GadgetError, match="no device-capable"):
+        manager._select_udc("auto")
+
+
+def test_gadget_manager_auto_selection_reports_udc_root_error(tmp_path, monkeypatch) -> None:
+    udc_root = tmp_path / "udc"
+    udc_root.mkdir()
+    manager = GadgetManager(configfs_root=str(tmp_path / "configfs"), udc_root=str(udc_root))
+    original_iterdir = Path.iterdir
+
+    def fail_for_udc_root(path):
+        if path == udc_root:
+            raise OSError("sysfs unavailable")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", fail_for_udc_root)
+    with pytest.raises(GadgetError, match="cannot inspect"):
+        manager._select_udc("auto")
+
+
+def test_gadget_manager_rejects_unknown_explicit_udc(tmp_path) -> None:
+    manager = GadgetManager(configfs_root=str(tmp_path / "configfs"), udc_root=str(tmp_path / "udc"))
+    with pytest.raises(GadgetError, match="not device-capable"):
+        manager._select_udc("missing")
 
 
 def test_network_mount_rejects_non_linux(monkeypatch) -> None:

@@ -42,9 +42,8 @@ Debian Bullseye package name is `nbdkit-plugin-python`, not `nbdkit-plugin-pytho
 Important: Debian's nbdkit Python plugin runs with its system Python interpreter, not the RemotePFS `.venv`. The tested Radxa Cubie A7S image reports `python_version=3.9.2` from `nbdkit --dump-plugin python`; installing Python 3.11 with `uv` does not change the nbdkit plugin interpreter. The nbdkit import path must remain Python 3.9-compatible. RemotePFS parses YAML in the service process; the plugin does not import the YAML parser. Tests enforce Python 3.9 parsing for the plugin import chain.
 
 ```bash
-sudo apt update
-sudo apt install -y nbdkit nbdkit-plugin-python nbd-client cifs-utils nfs-common \
-  kmod curl ca-certificates
+sudo apt install -y nbdkit nbdkit-plugin-python nbd-client libnbd-bin python3-libnbd \
+  cifs-utils nfs-common kmod curl ca-certificates
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 sudo install -m 0755 "$HOME/.local/bin/uv" /usr/local/bin/uv
@@ -119,8 +118,7 @@ filesystems, connect `/dev/nbd0`, and write ConfigFS. It starts the separate
 orchestration unit to the nbdkit service account.
 
 Edit `/etc/remotepfs/remotepfs.yaml`. Keep configured `mount_point` paths under
-`/mnt`; the hardened orchestration unit grants write access there. CIFS options
-must include `ro`; the recommended SMB dialect is `vers=3.1.1`.
+`/mnt`. CIFS options must include `ro`; recommended SMB dialect is `vers=3.1.1`.
 
 Create credentials file outside repository:
 
@@ -129,14 +127,54 @@ sudo install -m 0600 /dev/null /etc/remotepfs/nas1.credentials
 sudoedit /etc/remotepfs/nas1.credentials
 ```
 
-Add `username=...` and `password=...` lines, then verify SMB 3.1.1:
+Add `username=...` and `password=...` lines. Create a host-visible systemd
+mount unit for each configured source. This is required because
+`remotepfs.service` and `remotepfs-nbdkit.service` use separate hardened mount
+namespaces.
+
+For `/mnt/nas1`, create `/etc/systemd/system/mnt-nas1.mount`:
+
+```ini
+[Unit]
+Description=RemotePFS NAS source
+After=network-online.target
+Wants=network-online.target
+
+[Mount]
+What=//NAS_IP/games
+Where=/mnt/nas1
+Type=cifs
+Options=ro,vers=3.1.1,cache=strict,actimeo=30,rsize=1048576,credentials=/etc/remotepfs/nas1.credentials
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Mount units must use escaped paths (`mnt-nas1.mount` for `/mnt/nas1`).
+Repeat unit creation for every configured source, then enable them before
+RemotePFS:
 
 ```bash
 sudo mkdir -p /mnt/nas1
-sudo mount -t cifs -o ro,vers=3.1.1,cache=strict,actimeo=30,rsize=1048576,credentials=/etc/remotepfs/nas1.credentials \
-  //NAS_IP/games /mnt/nas1
+sudo systemctl daemon-reload
+sudo systemctl enable --now mnt-nas1.mount
+findmnt -T /mnt/nas1
 find /mnt/nas1 -maxdepth 2 -type f | head
-sudo umount /mnt/nas1
+```
+
+Install the matching RemotePFS drop-in so service startup requires every
+host-visible source mount:
+
+```bash
+sudo mkdir -p /etc/systemd/system/remotepfs.service.d
+sudo cp config/remotepfs.service.d/mounts.conf \
+  /etc/systemd/system/remotepfs.service.d/mounts.conf
+```
+
+Do not run `mount` from the shell after enabling the unit. To unmount:
+
+```bash
+sudo systemctl disable --now mnt-nas1.mount
 ```
 
 For NFS, set `protocol: nfs` and use an NFS endpoint with `options`.

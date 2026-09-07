@@ -89,6 +89,7 @@ class Config:
     oem_name: str
     sources: list[SourceConfig] = field(default_factory=list)
     entries: list[EntryConfig] = field(default_factory=list)
+    usb_port: str = "auto"
 
     @property
     def image_size_bytes(self) -> int:
@@ -115,8 +116,8 @@ def _validate_no_traversal(path: str, field_name: str) -> None:
             raise ConfigError(f"{field_name}: path traversal pattern '{pattern}' rejected", field=field_name)
 
 
-def _validate_global(raw: dict[str, object]) -> tuple[int, int, str, str]:
-    """Validate the [global] table; return (image_size_gib, cluster_size_kib, label, oem_name)."""
+def _validate_global(raw: dict[str, object]) -> tuple[int, int, str, str, str]:
+    """Validate global settings; return image, cluster, labels, and USB port."""
     image_size_gib = raw.get("image_size_gib", 2048)
     if not isinstance(image_size_gib, int) or isinstance(image_size_gib, bool):
         raise ConfigError("global.image_size_gib: must be an integer", field="global.image_size_gib")
@@ -140,7 +141,14 @@ def _validate_global(raw: dict[str, object]) -> tuple[int, int, str, str]:
     oem_name = raw.get("oem_name", "REMOTEPF")
     if not isinstance(oem_name, str) or not oem_name.isascii() or len(oem_name) != 8 or oem_name != oem_name.upper():
         raise ConfigError("global.oem_name: must be uppercase ASCII, exactly 8 chars", field="global.oem_name")
-    return image_size_gib, cluster_size_kib, label, oem_name
+
+    usb_port = raw.get("usb_port", "auto")
+    if not isinstance(usb_port, str) or not usb_port or "/" in usb_port:
+        raise ConfigError(
+            "global.usb_port: must be 'auto' or a non-empty UDC name",
+            field="global.usb_port",
+        )
+    return image_size_gib, cluster_size_kib, label, oem_name, usb_port
 
 
 def _validate_sources(raw: list[object]) -> list[SourceConfig]:
@@ -268,7 +276,7 @@ def validate(raw: dict[str, object]) -> Config:
     g = raw.get("global")
     if not isinstance(g, dict):
         raise ConfigError("global section is required", field="global")
-    image_size_gib, cluster_size_kib, label, oem_name = _validate_global(g)
+    image_size_gib, cluster_size_kib, label, oem_name, usb_port = _validate_global(g)
 
     sources_raw = raw.get("sources")
     if not isinstance(sources_raw, list):
@@ -286,6 +294,7 @@ def validate(raw: dict[str, object]) -> Config:
         oem_name=oem_name,
         sources=sources,
         entries=entries,
+        usb_port=usb_port,
     )
 
 

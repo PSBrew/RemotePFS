@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import ast
+import errno
 import pickle
 from pathlib import Path
+
+import pytest
 
 from remotepfs import remotepfs_nbd
 from remotepfs.config import parse
@@ -41,6 +44,7 @@ def test_plugin_loads_state_and_reports_read_only_contract(tmp_path) -> None:
     state_path.write_bytes(pickle.dumps(mapper.to_state()))
     remotepfs_nbd.image_size = 0
     remotepfs_nbd.sector_mapper = None
+    remotepfs_nbd.config("cache-on-read", "true")
     remotepfs_nbd.config("mapper_state", str(state_path))
     remotepfs_nbd.config_complete()
     assert remotepfs_nbd.get_size() == mapper.total_bytes
@@ -48,6 +52,9 @@ def test_plugin_loads_state_and_reports_read_only_contract(tmp_path) -> None:
     assert remotepfs_nbd.can_write() is False
     assert remotepfs_nbd.can_trim() is False
     assert remotepfs_nbd.thread_model() == remotepfs_nbd.nbdkit.THREAD_MODEL_SERIALIZE_REQUESTS
+    assert remotepfs_nbd.open(True) is None
+    with pytest.raises(OSError, match="read-only"):
+        remotepfs_nbd.open(False)
     remotepfs_nbd.close(None)
     mapper.close()
 
@@ -62,6 +69,25 @@ def test_plugin_pread_fills_buffer(tmp_path) -> None:
     remotepfs_nbd.pread(None, memoryview(buffer), offset, 0)
     assert bytes(buffer) == b"plugin-data"
     mapper.close()
+
+
+def test_plugin_pread_reports_source_errno_to_nbdkit(monkeypatch) -> None:
+    """Report missing source files through nbdkit and raise OSError."""
+    errors: list[int] = []
+
+    class MissingSource:
+        def read(self, offset: int, buffer: memoryview) -> None:
+            raise FileNotFoundError(errno.ENOENT, "missing NFS source")
+
+    monkeypatch.setattr(remotepfs_nbd.nbdkit, "set_error", errors.append, raising=False)
+    remotepfs_nbd.image_size = 512
+    remotepfs_nbd.sector_mapper = MissingSource()
+
+    with pytest.raises(OSError) as raised:
+        remotepfs_nbd.pread(None, memoryview(bytearray(512)), 0, 0)
+
+    assert raised.value.errno == errno.ENOENT
+    assert errors == [errno.ENOENT]
 
 
 def test_plugin_extents_reports_zero_holes(tmp_path) -> None:

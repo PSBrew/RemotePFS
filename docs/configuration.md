@@ -8,6 +8,11 @@ global:
   cluster_size_kib: 64
   label: REMOTEPFS
   oem_name: REMOTEPF
+  # USB device controller: auto or explicit UDC name.
+  # List candidates on SBC:
+  #   ls -1 /sys/class/udc/
+  #   for udc in /sys/class/udc/*; do printf '%s: ' "$(basename "$udc")"; cat "$udc/current_speed" 2>/dev/null || echo unknown; done
+  usb_port: auto
 
 sources:
   - name: nas1

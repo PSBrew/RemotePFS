@@ -110,6 +110,13 @@
 - Upstream: https://docs.docker.com/build/building/multi-platform/
 - Internal: 14-docker-sbc-deployment.md
 
+## 15 - Cubie A7S USB OTG Field Notes
+- What: Field validation of Cubie A7S USB-C roles, UDC discovery, USB 2.0 High-Speed negotiation, ConfigFS teardown, and RemotePFS gadget restart behavior.
+- Relevance: Identifies the working first USB-C port farther from Ethernet and power input, plus OS checks for UDC state and negotiated speed.
+- Gotchas: UDC names are BSP-specific; first port is USB 2.0 High-Speed, not USB 3.x; never select first sysfs result blindly; clear NBD and ConfigFS state before restart.
+- Upstream: https://docs.radxa.com/en/cubie/a7s, https://docs.kernel.org/usb/gadget_configfs.html
+- Internal: 15-cubie-a7s-usb-otg-field-notes.md
+
 ---
 
 ## Cross-Reference Matrix
@@ -130,3 +137,4 @@
 | 12-mkpfs | - | all specs, project structure |
 | 13-future | 05-exFAT, 07-protocols | specs (extension points) |
 | 14-docker-sbc | 03-RadxA7S, 06-USB-gadget, 07-protocols | deployment docs, container packaging |
+| 15-cubie-a7s-usb-otg | 03-RadxA7S, 06-USB-gadget | gadget_manager, SBC deployment, hardware validation |

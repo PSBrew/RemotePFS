@@ -1,7 +1,7 @@
 [Unit]
 Description=RemotePFS nbdkit read-only NBD server
 After=network-online.target
-Before=remotepfs.service
+PartOf=remotepfs.service
 
 [Service]
 Type=simple
@@ -9,7 +9,8 @@ User=remotepfs-nbd
 Group=remotepfs
 RuntimeDirectory=remotepfs
 RuntimeDirectoryMode=0700
-ExecStart=/usr/bin/nbdkit -U /run/remotepfs/nbd.sock --pidfile /run/remotepfs/nbdkit.pid --unix-mode=0600 --exit-with-parent --threads 1 --max-request 98304 --readonly --filter=blocksize --filter=cache python /opt/remotepfs/source/src/remotepfs/remotepfs_nbd.py mapper_state=/var/lib/remotepfs/mapper.state minblock=512 maxdata=65536 maxlen=134217728 cache-min-block-size=262144 cache-max-size=1073741824 cache-on-read=true
+ExecStart=/usr/bin/nbdkit -U /run/remotepfs/nbd.sock --pidfile /run/remotepfs/nbdkit.pid --exit-with-parent --threads 1 --readonly --filter=blocksize --filter=cache python /opt/remotepfs/source/src/remotepfs/remotepfs_nbd.py mapper_state=/var/lib/remotepfs/mapper.state minblock=512 maxdata=65536 maxlen=134217728 cache-max-size=1073741824 cache-on-read=true
+ExecStartPost=/bin/sh -c 'for i in $(seq 1 100); do [ -S /run/remotepfs/nbd.sock ] && chmod 0600 /run/remotepfs/nbd.sock && exit 0; sleep 0.1; done; exit 1'
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=yes

@@ -250,6 +250,19 @@ root, while `remotepfs-nbdkit.service` owns the socket and runs nbdkit as
 | Multi-network load balancing | — | Link aggregator |
 | Multiple simultaneous LUNs | — | Multi-game LUNs |
 
+## DD-11: USB Device-Port and Restart Safety
+
+Hardware validation on Radxa Cubie A7S uses the USB-C OTG/device connector.
+The USB 3.x connector is host-only with the tested kernel because DWC3 gadget
+mode is disabled. A bound UDC is not sufficient proof of host visibility:
+`/sys/class/udc/<udc>/state` must become `configured` after Windows or PS5
+connects.
+
+Gadget restart must be idempotent. Orchestration unbinds the UDC, clears the
+mass-storage LUN backing file, unlinks the function, and removes the stale
+ConfigFS tree before writing new LUN attributes. This avoids `EBUSY` from
+leftover LUN ownership.
+
 ## References
 
 - Canonical specs: `specs/01-08` in this repository

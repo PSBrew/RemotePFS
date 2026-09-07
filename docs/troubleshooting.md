@@ -181,11 +181,13 @@ sudo systemctl status remotepfs remotepfs-nbdkit --no-pager
 sudo journalctl -u remotepfs -u remotepfs-nbdkit -n 100 --no-pager
 pgrep -a nbdkit
 stat /run/remotepfs/nbd.sock
-sudo nbd-client -U /run/remotepfs/nbd.sock -r /dev/nbd0
+sudo nbd-client -u /run/remotepfs/nbd.sock -R -L /dev/nbd0
 blockdev --getsize64 /dev/nbd0
 ```
 
-The gadget must bind only after nbdkit has a socket and `/dev/nbd0` has non-zero size. `nbd-client` uses uppercase `-U` for the Unix socket.
+Debian nbd-client 3.18 uses `-u` for Unix sockets, `-R` for read-only, and
+`-L` for non-netlink kernel control. Confirm option names with
+`sudo nbd-client --help` before adapting this command to another distribution.
 
 ## Gadget bind fails
 

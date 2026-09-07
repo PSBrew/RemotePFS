@@ -11,7 +11,7 @@ class PreloadError(RuntimeError):
 
 def build_nbdsh_command(socket_path: str, ranges: list[tuple[int, int]]) -> list[str]:
     """Build nbdsh command that reads each hot range through nbdkit."""
-    commands = [f"h.pread(bytearray({length}), {offset})" for offset, length in ranges]
+    commands = [f"h.pread({length}, {offset})" for offset, length in ranges]
     script = "; ".join(commands) or "pass"
     return [
         "nbdsh",

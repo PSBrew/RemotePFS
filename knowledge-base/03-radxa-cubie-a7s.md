@@ -115,20 +115,17 @@ Ethernet, up to 16 GB LPDDR5, and PCIe Gen3 via FFC.
 
 ### 3.4 USB Ports
 
-|Port|Spec|RemotePFS Relevance|
+|Port|Documented capability|RemotePFS relevance|
 |---|---|---|
-|USB-C #1|USB 3.1 Gen2 OTG + DisplayPort Alt mode|**Primary gadget/OTG port** — 10 Gbps DRD|
-|USB-C #2|USB 2.0 OTG, 5 V power input|Secondary OTG; lower bandwidth (480 Mbps)|
-|USB-A|USB 2.0 host|General peripheral|
+|USB-C #1|USB 2.0, 5 V power input, OTG|Possible gadget path, but lower bandwidth; avoid relying on it as sole power source during OTG experiments|
+|USB-C #2|USB 3.2, DisplayPort Alt Mode, OTG|Preferred gadget/device connector for RemotePFS|
+|USB-A|USB host|General peripheral; not a gadget connector|
 
 **USB OTG / Gadget Mode Notes:**
-- SoC provides USB 3.1 Gen2 DRD (Dual-Role Device) = full OTG.
-- SoC also provides USB 2.0 DRD — second OTG capable port.
-- Linux USB gadget framework (configfs/functionfs) should work with
-  the Allwinner musb/sunxi DRD controller driver in the BSP kernel.
-- USB-C #1 with DP Alt mode is the high-bandwidth OTG port (10 Gbps
-  SuperSpeed+) — ideal for RemotePFS USB mass-storage gadget.
-- USB-C #2 is USB 2.0 OTG (480 Mbps) — usable but slower.
+- Product documentation identifies USB-C #2 as the USB 3.2 + DisplayPort Alt Mode + OTG connector.
+- USB-C #1 is a USB 2.0/power connector with OTG capability.
+- The correct UDC is BSP- and device-tree-specific. Never select the first entry from `/sys/class/udc/` without validating its resolved controller path and role.
+- The tested image exposes `4100000.udc-controller` as `sunxi_usb_udc` and `6a00000.xhci2-controller` below `12.usbc2` as `dwc3-gadget`; this alone does not prove physical port mapping or current device role.
 
 ### 3.5 PCIe
 
@@ -207,14 +204,12 @@ kernel version; do not assume mainline DT bindings.
 
 ### 5.1 USB OTG Gadget Mode — Strong Fit
 
-- Two OTG-capable USB-C ports (USB 3.1 Gen2 + USB 2.0).
-- USB 3.1 Gen2 DRD at 10 Gbps is excellent for USB mass-storage
-  gadget — higher than most SBCs in this price range.
-- Linux 6.6 BSP has gadget framework; mass_storage function ready.
-- Can present as USB block device to host (PS5 or PC).
+- Two documented OTG-capable USB-C ports: USB-C #2 with USB 3.2 and USB-C #1 with USB 2.0/power.
+- USB-C #2 is preferred for RemotePFS device mode.
+- Linux 6.6 BSP has gadget framework; `mass_storage` function is available when required modules are present.
+- Runtime UDC selection needs controller-path and role validation; port labels alone are insufficient.
 
 ### 5.2 Network Throughput — Good
-
 - Gigabit Ethernet RJ45 (GMAC) — ~940 Mbps practical TCP.
 - WiFi 6 dual-band — useful for wireless, but GbE preferred for
   RemotePFS file serving.

@@ -151,7 +151,7 @@ Lifecycle management for the nbdkit process serving the NBD device.
 
 - Start/stop nbdkit with correct filter chain and plugin path.
 - Bind to AF_UNIX socket at `/run/remotepfs/nbd.sock`.
-- Connect kernel NBD client (`nbd-client -U /run/remotepfs/nbd.sock -r /dev/nbd0`).
+- Connect kernel NBD client (`nbd-client -u /run/remotepfs/nbd.sock -R -L /dev/nbd0` on Debian nbd 3.18).
 - Handle graceful restart: stop old nbdkit, disconnect NBD client, start new
   nbdkit with updated plugin state, reconnect NBD client.
 - Health checking: monitor nbdkit process, verify socket liveness.
@@ -419,7 +419,7 @@ Modules **not** required (removed from V0 design):
 4. Compile config → SectorMapper (build exFAT metadata in memory)
 5. Start nbdkit with cache + blocksize filters + python plugin
 6. Connect NBD client:
-     nbd-client -U /run/remotepfs/nbd.sock -r /dev/nbd0
+     nbd-client -u /run/remotepfs/nbd.sock -R -L /dev/nbd0
 7. Set NBD read-ahead:
      echo 4096 > /sys/block/nbd0/queue/read_ahead_kb
 8. Metadata preloading: pread() all hot LBAs through nbdkit cache
