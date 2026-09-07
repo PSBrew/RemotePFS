@@ -185,7 +185,7 @@ entries:
         assert struct.unpack_from("<H", entry, 18)[0] == accessed_date
         assert entry[20] == created_increment
         assert entry[21] == modified_increment
-        assert entry[22:25] == b"\x80\x80\x80"
+        assert entry[22:25] == b"\0\0\0"
 
     try:
         root = cluster_bytes(layout.root_dir_cluster)
