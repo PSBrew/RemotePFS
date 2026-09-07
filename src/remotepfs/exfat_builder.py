@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import calendar
+import datetime
 import hashlib
 import logging
 import os
@@ -35,6 +37,23 @@ from .consts import (
 )
 
 GPT_PARTITION_TRAILER_SECTORS = 33
+
+EXFAT_MIN_TIMESTAMP_SECONDS = calendar.timegm((1980, 1, 1, 0, 0, 0))
+EXFAT_MAX_TIMESTAMP_SECONDS = calendar.timegm((2107, 12, 31, 23, 59, 59))
+
+
+def _exfat_timestamp(timestamp_ns: int) -> tuple[int, int, int]:
+    """Encode Unix nanoseconds as exFAT date, time, and 10 ms increment."""
+    seconds, nanoseconds = divmod(timestamp_ns, 1_000_000_000)
+    if seconds < EXFAT_MIN_TIMESTAMP_SECONDS:
+        seconds, nanoseconds = EXFAT_MIN_TIMESTAMP_SECONDS, 0
+    elif seconds > EXFAT_MAX_TIMESTAMP_SECONDS:
+        seconds, nanoseconds = EXFAT_MAX_TIMESTAMP_SECONDS, 999_000_000
+    timestamp = datetime.datetime.fromtimestamp(seconds, datetime.UTC)
+    date = ((timestamp.year - 1980) << 9) | (timestamp.month << 5) | timestamp.day
+    time = (timestamp.hour << 11) | (timestamp.minute << 5) | (timestamp.second // 2)
+    increment = (timestamp.second % 2) * 100 + nanoseconds // 10_000_000
+    return date, time, increment
 
 
 def stable_file_id(virtual_path: str) -> int:
@@ -139,6 +158,9 @@ class _Node:
     children: list[_Node] = field(default_factory=list)
     first_cluster: int = 0
     cluster_count: int = 0
+    created_ns: int = 0
+    modified_ns: int = 0
+    accessed_ns: int = 0
 
 
 class ExfatBuilder:
@@ -235,7 +257,6 @@ class ExfatBuilder:
 
     def _build_tree(self) -> list[_Node]:
         """Scan configured sources in stable lexical order."""
-
         root = _Node("", "", "", True)
         for entry in sorted(self.config.entries, key=lambda item: item.virtual_path):
             node = _Node(entry.virtual_path, entry.virtual_path, entry.source, entry.type == "directory")
@@ -243,13 +264,23 @@ class ExfatBuilder:
                 self._scan(node)
             else:
                 try:
-                    node.size_bytes = os.stat(node.source_path).st_size
+                    source_stat = os.stat(node.source_path, follow_symlinks=False)
                 except OSError:
-                    node.size_bytes = 0
+                    source_stat = None
+                if source_stat is not None:
+                    node.size_bytes = source_stat.st_size
+                    self._set_timestamps(node, source_stat)
             root.children.append(node)
         return [root]
 
-    def _scan(self, parent: _Node) -> None:
+    @staticmethod
+    def _set_timestamps(node: _Node, source_stat: os.stat_result) -> None:
+        """Copy source timestamps into one internal tree node."""
+        node.modified_ns = source_stat.st_mtime_ns
+        node.accessed_ns = source_stat.st_atime_ns
+        node.created_ns = getattr(source_stat, "st_birthtime_ns", None) or node.modified_ns
+
+    def _scan(self, parent: _Node, source_stat: os.stat_result | None = None) -> None:
         """Recursively scan directory without following symlinks."""
 
         try:
@@ -257,17 +288,34 @@ class ExfatBuilder:
         except OSError as error:
             logging.getLogger(__name__).warning("cannot scan directory %s: %s", parent.source_path, error)
             return
+        if source_stat is None:
+            try:
+                source_stat = os.stat(parent.source_path, follow_symlinks=False)
+            except OSError:
+                source_stat = None
+        if source_stat is not None:
+            self._set_timestamps(parent, source_stat)
         for item in items:
             if item.is_dir(follow_symlinks=False):
                 child = _Node(item.name, f"{parent.virtual_path}/{item.name}", item.path, True)
+                try:
+                    child_stat = item.stat(follow_symlinks=False)
+                except OSError:
+                    child_stat = None
+                if child_stat is not None:
+                    self._set_timestamps(child, child_stat)
                 parent.children.append(child)
-                self._scan(child)
+                self._scan(child, child_stat)
             elif item.is_file(follow_symlinks=False):
                 try:
-                    size = item.stat(follow_symlinks=False).st_size
+                    child_stat = item.stat(follow_symlinks=False)
                 except OSError:
-                    size = 0
-                parent.children.append(_Node(item.name, f"{parent.virtual_path}/{item.name}", item.path, False, size))
+                    child_stat = None
+                child = _Node(item.name, f"{parent.virtual_path}/{item.name}", item.path, False)
+                if child_stat is not None:
+                    child.size_bytes = child_stat.st_size
+                    self._set_timestamps(child, child_stat)
+                parent.children.append(child)
 
     @staticmethod
     def _allocated_ranges(
@@ -494,6 +542,7 @@ class ExfatBuilder:
         primary[0] = ENTRY_FILE
         primary[1] = filename_count + 1
         struct.pack_into("<H", primary, 4, 0x10 if node.is_directory else 0x20)
+        self._put_timestamps(primary, node)
         stream = bytearray(32)
         stream[0] = ENTRY_STREAM
         stream[3] = units
@@ -510,6 +559,19 @@ class ExfatBuilder:
         checksum = self._entry_checksum(raw)
         primary[2:4] = struct.pack("<H", checksum)
         return [bytes(primary), *result[1:]]
+
+    @staticmethod
+    def _put_timestamps(primary: bytearray, node: _Node) -> None:
+        """Write exFAT creation, modification, and access timestamps."""
+        create_date, create_time, create_increment = _exfat_timestamp(node.created_ns)
+        modified_date, modified_time, modified_increment = _exfat_timestamp(node.modified_ns)
+        accessed_date, accessed_time, _ = _exfat_timestamp(node.accessed_ns)
+        struct.pack_into("<HH", primary, 8, create_time, create_date)
+        struct.pack_into("<HH", primary, 12, modified_time, modified_date)
+        struct.pack_into("<HH", primary, 16, accessed_time, accessed_date)
+        primary[20] = create_increment
+        primary[21] = modified_increment
+        primary[22:25] = b"\x80\x80\x80"
 
     def _name_hash(self, encoded: bytes) -> int:
         """Calculate exFAT name hash using uppercase UTF-16 code units."""
