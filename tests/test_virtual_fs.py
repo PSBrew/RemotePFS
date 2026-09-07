@@ -7,9 +7,16 @@ import pickle
 import struct
 import zlib
 
-from remotepfs import source_metadata
 from remotepfs.config import parse
-from remotepfs.exfat_builder import _exfat_timestamp, build_exfat, scan_directory
+from remotepfs.exfat_builder import (
+    _STATX_BTIME,
+    _exfat_timestamp,
+    _source_stat,
+    _SourceStat,
+    _Statx,
+    build_exfat,
+    scan_directory,
+)
 from remotepfs.sector_mapper import SectorMapper
 
 
@@ -207,32 +214,41 @@ def test_exfat_timestamp_clamps_range_and_keeps_subsecond_precision() -> None:
     assert _exfat_timestamp(1_700_000_001_230_000_000)[2] == 123
 
 
-def test_statx_birthtime_reader_returns_kernel_birthtime(monkeypatch, tmp_path) -> None:
-    """Read birth time from statx and fall back on syscall failure."""
+def test_statx_reader_returns_complete_snapshot_and_falls_back(monkeypatch, tmp_path) -> None:
+    """Read one complete birth-time snapshot from statx and fall back on failure."""
     source = tmp_path / "source.bin"
     source.write_bytes(b"payload")
-    birth_seconds = 1_650_000_000
 
-    def fake_statx(_dirfd, _path, _flags, _mask, result) -> int:
-        result.stx_mask = source_metadata._STATX_BTIME
-        result.stx_btime.tv_sec = birth_seconds
+    def fake_statx(_dirfd, _path, _flags, _mask, result: _Statx) -> int:
+        result.stx_mask = _STATX_BTIME | 0x07FF
+        result.stx_size = 7
+        result.stx_atime.tv_sec = 1_650_000_001
+        result.stx_mtime.tv_sec = 1_650_000_002
+        result.stx_btime.tv_sec = 1_650_000_000
         result.stx_btime.tv_nsec = 123_000_000
         return 0
 
-    monkeypatch.setattr(source_metadata, "_statx", fake_statx)
-    assert source_metadata.source_birthtime_ns(str(source)) == 1_650_000_000_123_000_000
-    monkeypatch.setattr(source_metadata, "_statx", lambda *_args: -1)
-    assert source_metadata.source_birthtime_ns(str(source)) is None
+    monkeypatch.setattr("remotepfs.exfat_builder._statx", fake_statx)
+    snapshot = _source_stat(str(source))
+    assert snapshot is not None
+    assert snapshot.size_bytes == 7
+    assert snapshot.accessed_ns == 1_650_000_001_000_000_000
+    assert snapshot.modified_ns == 1_650_000_002_000_000_000
+    assert snapshot.created_ns == 1_650_000_000_123_000_000
+    monkeypatch.setattr("remotepfs.exfat_builder._statx", lambda *_args: -1)
+    fallback = _source_stat(str(source))
+    assert fallback is not None
+    assert fallback.created_ns == fallback.modified_ns
 
 
-def test_builder_uses_statx_birthtime_for_creation_field(monkeypatch, tmp_path) -> None:
-    """Use statx birth time while retaining source modification time."""
+def test_builder_uses_snapshot_birthtime_for_creation_field(monkeypatch, tmp_path) -> None:
+    """Use one complete source snapshot for creation and modification fields."""
     source = tmp_path / "game.bin"
     source.write_bytes(b"payload")
     modified_ns = 1_700_000_000_000_000_000
     birth_ns = 1_600_000_000_000_000_000
-    os.utime(source, ns=(modified_ns, modified_ns))
-    monkeypatch.setattr(source_metadata, "source_birthtime_ns", lambda _path: birth_ns)
+    snapshot = _SourceStat(size_bytes=7, accessed_ns=modified_ns, modified_ns=modified_ns, created_ns=birth_ns)
+    monkeypatch.setattr("remotepfs.exfat_builder._source_stat", lambda _path: snapshot)
     mapper = SectorMapper.from_layout(build_exfat(parse(_config(tmp_path, source.name))))
     try:
         layout = mapper.layout
