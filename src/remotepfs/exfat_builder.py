@@ -3,20 +3,21 @@
 from __future__ import annotations
 
 import calendar
+import ctypes
 import datetime
 import hashlib
 import logging
 import os
 import struct
+import sys
 import uuid
 import zlib
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .config import Config
-
 from .consts import (
     BOOT_REGION_SECTORS,
     BOOT_REGION_TOTAL_SECTORS,
@@ -36,10 +37,133 @@ from .consts import (
     UPCASE_TABLE_BYTES,
 )
 
-GPT_PARTITION_TRAILER_SECTORS = 33
-
 EXFAT_MIN_TIMESTAMP_SECONDS = calendar.timegm((1980, 1, 1, 0, 0, 0))
 EXFAT_MAX_TIMESTAMP_SECONDS = calendar.timegm((2107, 12, 31, 23, 59, 59))
+GPT_PARTITION_TRAILER_SECTORS = 33
+
+
+class _StatxTimestamp(ctypes.Structure):
+    """Linux statx timestamp layout."""
+
+    _fields_ = [
+        ("tv_sec", ctypes.c_int64),
+        ("tv_nsec", ctypes.c_uint32),
+        ("reserved", ctypes.c_int32),
+    ]
+
+
+class _Statx(ctypes.Structure):
+    """Linux statx structure through kernel-defined 256-byte size."""
+
+    _fields_ = [
+        ("stx_mask", ctypes.c_uint32),
+        ("stx_blksize", ctypes.c_uint32),
+        ("stx_attributes", ctypes.c_uint64),
+        ("stx_nlink", ctypes.c_uint32),
+        ("stx_uid", ctypes.c_uint32),
+        ("stx_gid", ctypes.c_uint32),
+        ("stx_mode", ctypes.c_uint16),
+        ("spare0", ctypes.c_uint16),
+        ("stx_ino", ctypes.c_uint64),
+        ("stx_size", ctypes.c_uint64),
+        ("stx_blocks", ctypes.c_uint64),
+        ("stx_attributes_mask", ctypes.c_uint64),
+        ("stx_atime", _StatxTimestamp),
+        ("stx_btime", _StatxTimestamp),
+        ("stx_ctime", _StatxTimestamp),
+        ("stx_mtime", _StatxTimestamp),
+        ("stx_rdev_major", ctypes.c_uint32),
+        ("stx_rdev_minor", ctypes.c_uint32),
+        ("stx_dev_major", ctypes.c_uint32),
+        ("stx_dev_minor", ctypes.c_uint32),
+        ("stx_mnt_id", ctypes.c_uint64),
+        ("stx_dio_mem_align", ctypes.c_uint32),
+        ("stx_dio_offset_align", ctypes.c_uint32),
+        ("stx_subvol", ctypes.c_uint64),
+        ("stx_atomic_write_unit_min", ctypes.c_uint32),
+        ("stx_atomic_write_unit_max", ctypes.c_uint32),
+        ("stx_atomic_write_segments_max", ctypes.c_uint32),
+        ("stx_dio_read_offset_align", ctypes.c_uint32),
+        ("spare3", ctypes.c_uint64 * 9),
+    ]
+
+
+@dataclass(frozen=True)
+class _SourceStat:
+    """One consistent source metadata snapshot."""
+
+    size_bytes: int
+    accessed_ns: int
+    modified_ns: int
+    created_ns: int
+
+
+_AT_FDCWD = -100
+_AT_SYMLINK_NOFOLLOW = 0x100
+_STATX_BASIC_STATS = 0x07FF
+_STATX_ATIME = 0x0020
+_STATX_BTIME = 0x0800
+_STATX_REQUIRED = 0x0240
+
+
+def _load_statx() -> Callable[..., int] | None:
+    """Load libc statx on Linux, or return None on unsupported platforms."""
+    if sys.platform != "linux":
+        return None
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        statx = libc.statx
+        statx.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_uint, ctypes.POINTER(_Statx)]
+        statx.restype = ctypes.c_int
+        return statx
+    except (AttributeError, OSError):
+        return None
+
+
+_statx = _load_statx()
+
+
+def _source_stat(path: str) -> _SourceStat | None:
+    """Read one complete source metadata snapshot."""
+    if _statx is not None:
+        result = _Statx()
+        try:
+            status = _statx(
+                _AT_FDCWD,
+                os.fsencode(path),
+                _AT_SYMLINK_NOFOLLOW,
+                _STATX_BASIC_STATS | _STATX_BTIME,
+                result,
+            )
+        except OSError:
+            status = -1
+        if status == 0 and result.stx_mask & _STATX_REQUIRED == _STATX_REQUIRED:
+            modified_ns = result.stx_mtime.tv_sec * 1_000_000_000 + result.stx_mtime.tv_nsec
+            created_ns = (
+                result.stx_btime.tv_sec * 1_000_000_000 + result.stx_btime.tv_nsec
+                if result.stx_mask & _STATX_BTIME
+                else modified_ns
+            )
+            return _SourceStat(
+                size_bytes=result.stx_size,
+                accessed_ns=(
+                    result.stx_atime.tv_sec * 1_000_000_000 + result.stx_atime.tv_nsec
+                    if result.stx_mask & _STATX_ATIME
+                    else modified_ns
+                ),
+                modified_ns=modified_ns,
+                created_ns=created_ns,
+            )
+    try:
+        source_stat = os.stat(path, follow_symlinks=False)
+    except OSError:
+        return None
+    return _SourceStat(
+        size_bytes=source_stat.st_size,
+        accessed_ns=source_stat.st_atime_ns,
+        modified_ns=source_stat.st_mtime_ns,
+        created_ns=getattr(source_stat, "st_birthtime_ns", None) or source_stat.st_mtime_ns,
+    )
 
 
 def _exfat_timestamp(timestamp_ns: int) -> tuple[int, int, int]:
@@ -263,58 +387,46 @@ class ExfatBuilder:
             if node.is_directory:
                 self._scan(node)
             else:
-                try:
-                    source_stat = os.stat(node.source_path, follow_symlinks=False)
-                except OSError:
-                    source_stat = None
+                source_stat = _source_stat(node.source_path)
                 if source_stat is not None:
-                    node.size_bytes = source_stat.st_size
-                    self._set_timestamps(node, source_stat)
+                    node.size_bytes = source_stat.size_bytes
+                    self._apply_source_stat(node, source_stat)
             root.children.append(node)
         return [root]
 
     @staticmethod
-    def _set_timestamps(node: _Node, source_stat: os.stat_result) -> None:
-        """Copy source timestamps into one internal tree node."""
-        node.modified_ns = source_stat.st_mtime_ns
-        node.accessed_ns = source_stat.st_atime_ns
-        node.created_ns = getattr(source_stat, "st_birthtime_ns", None) or node.modified_ns
+    def _apply_source_stat(node: _Node, source_stat: _SourceStat) -> None:
+        """Copy one source metadata snapshot into an internal tree node."""
+        if not node.is_directory:
+            node.size_bytes = source_stat.size_bytes
+        node.created_ns = source_stat.created_ns
+        node.modified_ns = source_stat.modified_ns
+        node.accessed_ns = source_stat.accessed_ns
 
-    def _scan(self, parent: _Node, source_stat: os.stat_result | None = None) -> None:
+    def _scan(self, parent: _Node, source_stat: _SourceStat | None = None) -> None:
         """Recursively scan directory without following symlinks."""
-
         try:
             items = sorted(os.scandir(parent.source_path), key=lambda item: item.name)
         except OSError as error:
             logging.getLogger(__name__).warning("cannot scan directory %s: %s", parent.source_path, error)
             return
         if source_stat is None:
-            try:
-                source_stat = os.stat(parent.source_path, follow_symlinks=False)
-            except OSError:
-                source_stat = None
+            source_stat = _source_stat(parent.source_path)
         if source_stat is not None:
-            self._set_timestamps(parent, source_stat)
+            self._apply_source_stat(parent, source_stat)
         for item in items:
             if item.is_dir(follow_symlinks=False):
                 child = _Node(item.name, f"{parent.virtual_path}/{item.name}", item.path, True)
-                try:
-                    child_stat = item.stat(follow_symlinks=False)
-                except OSError:
-                    child_stat = None
+                child_stat = _source_stat(child.source_path)
                 if child_stat is not None:
-                    self._set_timestamps(child, child_stat)
+                    self._apply_source_stat(child, child_stat)
                 parent.children.append(child)
                 self._scan(child, child_stat)
             elif item.is_file(follow_symlinks=False):
-                try:
-                    child_stat = item.stat(follow_symlinks=False)
-                except OSError:
-                    child_stat = None
                 child = _Node(item.name, f"{parent.virtual_path}/{item.name}", item.path, False)
+                child_stat = _source_stat(child.source_path)
                 if child_stat is not None:
-                    child.size_bytes = child_stat.st_size
-                    self._set_timestamps(child, child_stat)
+                    self._apply_source_stat(child, child_stat)
                 parent.children.append(child)
 
     @staticmethod
