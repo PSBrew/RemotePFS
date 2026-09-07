@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from pathlib import Path
 
@@ -90,7 +91,16 @@ class GadgetManager:
         link = config / "mass_storage.0"
         if not link.exists():
             os.symlink(self.root / "functions" / "mass_storage.0", link)
-        self._write(self.root / "UDC", chosen_udc)
+        for _ in range(10):
+            try:
+                self._write(self.root / "UDC", chosen_udc)
+                break
+            except GadgetError as exc:
+                if "Errno 19" not in str(exc):
+                    raise
+                time.sleep(1)
+        else:
+            raise GadgetError(f"cannot bind UDC after retries: {chosen_udc}")
         return chosen_udc
 
     def _select_udc(self, requested: str | None) -> str:

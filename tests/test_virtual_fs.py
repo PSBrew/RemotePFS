@@ -181,6 +181,25 @@ def test_directory_checksums_and_bitmap_cover_allocated_clusters(tmp_path) -> No
                 else:
                     assert data_length == source.stat().st_size
                 offset += (secondary_count + 1) * 32
+            elif entry_type == 0x82:
+                upcase_cluster = struct.unpack_from("<I", root, offset + 20)[0]
+                upcase_length = struct.unpack_from("<Q", root, offset + 24)[0]
+                upcase_data = mapper.read_bytes(
+                    (
+                        layout.partition_start_lba
+                        + layout.cluster_heap_offset
+                        + (upcase_cluster - 2) * layout.sectors_per_cluster
+                    )
+                    * 512,
+                    upcase_length,
+                )
+                checksum = 0
+                for byte in upcase_data:
+                    checksum = ((checksum >> 1) | ((checksum & 1) << 31)) + byte
+                    checksum &= 0xFFFFFFFF
+                assert struct.unpack_from("<I", root, offset + 4)[0] == checksum
+                assert upcase_length == layout.upcase_length
+                offset += 32
             else:
                 offset += 32
         bitmap = cluster_bytes(layout.bitmap_cluster)

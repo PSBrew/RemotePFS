@@ -198,6 +198,7 @@ class ExfatBuilder:
             root, root is roots[0], bitmap_cluster, bitmap_length, upcase_cluster, len(upcase)
         )
         self._put_cluster_bytes(metadata, cluster_heap_offset, root.first_cluster, root_bytes)
+        self._put_cluster_bytes(metadata, cluster_heap_offset, upcase_cluster, upcase)
         for node in self._walk(root.children):
             if node.is_directory:
                 self._put_cluster_bytes(
