@@ -102,6 +102,7 @@ _AT_FDCWD = -100
 _AT_SYMLINK_NOFOLLOW = 0x100
 _STATX_BASIC_STATS = 0x07FF
 _STATX_BTIME = 0x0800
+_STATX_REQUIRED = 0x0260
 
 
 def _load_statx() -> Callable[..., int] | None:
@@ -135,7 +136,7 @@ def _source_stat(path: str) -> _SourceStat | None:
             )
         except OSError:
             status = -1
-        if status == 0 and result.stx_mask & _STATX_BASIC_STATS == _STATX_BASIC_STATS:
+        if status == 0 and result.stx_mask & _STATX_REQUIRED == _STATX_REQUIRED:
             modified_ns = result.stx_mtime.tv_sec * 1_000_000_000 + result.stx_mtime.tv_nsec
             created_ns = (
                 result.stx_btime.tv_sec * 1_000_000_000 + result.stx_btime.tv_nsec
