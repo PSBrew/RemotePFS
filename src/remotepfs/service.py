@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from . import __version__, preloader
 from .api import create_app
 from .config import Config, ConfigError, load, parse, validate
 from .gadget_manager import GadgetManager
@@ -54,7 +54,6 @@ class RemotePfsService:
         self.mounts = mount_manager or MountManager()
         self.nbd = nbd_manager or NbdkitManager(state_path=state_path)
         self.gadget = gadget_manager or GadgetManager()
-        self.started_at = time.monotonic()
         self.active: CompiledGeneration | None = None
         self.compiled: dict[int, CompiledGeneration] = {}
         self.next_generation = 1
@@ -93,14 +92,12 @@ class RemotePfsService:
         temporary_state.chmod(0o640)
         os.replace(temporary_state, state_file)
         self.nbd.start(image_size=generation.config.image_size_bytes, mapper_state=state_path)
-        from .preloader import preload
-
-        preload(generation.mapper, socket_path=self.nbd.socket_path)
+        preloader.preload(generation.mapper, socket_path=self.nbd.socket_path)
         self.nbd.connect()
         self.gadget.bind(udc=generation.config.usb_port)
 
     async def shutdown(self) -> None:
-        """Stop gadget and NBD resources, ignoring absent hardware on macOS."""
+        """Stop gadget and NBD resources."""
         try:
             self.gadget.unbind()
         except Exception:
@@ -251,7 +248,7 @@ class RemotePfsService:
         }
 
     def eject(self) -> None:
-        """Unbind gadget without stopping compiled software state."""
+        """Unbind gadget without clearing state."""
         self.gadget.eject()
         self.gadget.unbind()
 

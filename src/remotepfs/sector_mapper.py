@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
-from .consts import PARTITION_START_LBA, SECTOR_SIZE, SECTORS_PER_CLUSTER
+from .consts import SECTOR_SIZE, SECTORS_PER_CLUSTER
 from .exfat_builder import ExfatLayout, FileMapping
+
+MAX_METADATA_PREFETCH_BYTES = 64 * 1024
 
 
 @dataclass(frozen=True)
@@ -72,7 +74,7 @@ class SectorMapper:
         direct = self.layout.metadata.get(sector)
         if direct is not None:
             return direct
-        fat_start = PARTITION_START_LBA + self.layout.fat_offset
+        fat_start = self.layout.partition_start_lba + self.layout.fat_offset
         if fat_start <= sector < fat_start + self.layout.fat_length:
             return self._fat_sector(sector - fat_start)
         bitmap_start = self._file_start_sector(FileMapping(self.layout.bitmap_cluster, 1, "", 0, ""))
@@ -174,8 +176,49 @@ class SectorMapper:
         return result
 
     def get_hot_ranges(self) -> list[tuple[int, int]]:
-        """Return byte ranges precomputed for metadata warming."""
-        return list(self.layout.hot_ranges)
+        """Return bounded ranges covering eager metadata and directory chains."""
+        fat_start = self.layout.partition_start_lba + self.layout.fat_offset
+        fat_ranges: list[tuple[int, int]] = []
+        directory_clusters = [(self.layout.root_dir_cluster, 1)] + [
+            (entry.first_cluster, entry.cluster_count)
+            for entry in self.layout.entries
+            if entry.is_directory and entry.cluster_count
+        ]
+        for first_cluster, cluster_count in directory_clusters:
+            first_byte = first_cluster * 4
+            last_byte = (first_cluster + cluster_count) * 4
+            first_sector = first_byte // SECTOR_SIZE
+            sector_count = (last_byte + SECTOR_SIZE - 1) // SECTOR_SIZE - first_sector
+            fat_ranges.append(((fat_start + first_sector) * SECTOR_SIZE, sector_count * SECTOR_SIZE))
+        bitmap_start = self._file_start_sector(FileMapping(self.layout.bitmap_cluster, 1, "", 0, ""))
+        bitmap_sectors = (self.layout.bitmap_length + SECTOR_SIZE - 1) // SECTOR_SIZE
+        ranges = [
+            *self.layout.hot_ranges,
+            *fat_ranges,
+            (bitmap_start * SECTOR_SIZE, bitmap_sectors * SECTOR_SIZE),
+        ]
+        return self._bounded_ranges(ranges)
+
+    @staticmethod
+    def _bounded_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+        """Coalesce metadata ranges and split them at the cache request limit."""
+        merged: list[tuple[int, int]] = []
+        for start, length in sorted((start, length) for start, length in ranges if length > 0):
+            end = start + length
+            if merged and start <= merged[-1][0] + merged[-1][1]:
+                previous_start, previous_length = merged[-1]
+                merged[-1] = (previous_start, max(previous_start + previous_length, end) - previous_start)
+            else:
+                merged.append((start, length))
+        bounded: list[tuple[int, int]] = []
+        for start, length in merged:
+            while length > MAX_METADATA_PREFETCH_BYTES:
+                bounded.append((start, MAX_METADATA_PREFETCH_BYTES))
+                start += MAX_METADATA_PREFETCH_BYTES
+                length -= MAX_METADATA_PREFETCH_BYTES
+            if length:
+                bounded.append((start, length))
+        return bounded
 
     def read_metadata(self, offset: int, destination: bytearray | memoryview) -> None:
         """Read metadata-only range into writable destination."""
@@ -205,7 +248,9 @@ class SectorMapper:
     def _file_start_sector(self, mapping: FileMapping) -> int:
         """Return first virtual sector for a file mapping."""
         return (
-            PARTITION_START_LBA + self.layout.cluster_heap_offset + (mapping.start_cluster - 2) * SECTORS_PER_CLUSTER
+            self.layout.partition_start_lba
+            + self.layout.cluster_heap_offset
+            + (mapping.start_cluster - 2) * SECTORS_PER_CLUSTER
         )
 
 

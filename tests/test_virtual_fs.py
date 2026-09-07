@@ -268,6 +268,28 @@ def test_builder_uses_snapshot_birthtime_for_creation_field(monkeypatch, tmp_pat
         mapper.close()
 
 
+def test_hot_ranges_cover_directory_fat_without_prefetching_full_fat(tmp_path) -> None:
+    """Warm only FAT sectors needed for directory chains plus full bitmap."""
+    source = tmp_path / "game.bin"
+    source.write_bytes(b"payload")
+    mapper = SectorMapper.from_layout(build_exfat(parse(_config(tmp_path, source.name))))
+    try:
+        layout = mapper.layout
+        fat_start = (layout.partition_start_lba + layout.fat_offset) * 512
+        fat_end = fat_start + layout.fat_length * 512
+        hot_fat = [
+            (offset, length)
+            for offset, length in mapper.get_hot_ranges()
+            if offset < fat_end and offset + length > fat_start
+        ]
+        assert hot_fat
+        assert sum(length for _, length in hot_fat) < layout.fat_length * 512
+        assert all(length <= 64 * 1024 for _, length in mapper.get_hot_ranges())
+        assert all(mapper.is_metadata_region(offset, length) for offset, length in mapper.get_hot_ranges())
+    finally:
+        mapper.close()
+
+
 def test_directory_checksums_and_bitmap_cover_allocated_clusters(tmp_path) -> None:
     """Generated directory sets and allocation bitmap agree with FAT layout."""
     source = tmp_path / "game.bin"

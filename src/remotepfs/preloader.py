@@ -1,8 +1,9 @@
-"""Warm nbdkit cache with SectorMapper hot ranges."""
+"""Warm nbdkit cache with SectorMapper metadata ranges."""
 
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 
 
 class PreloadError(RuntimeError):
@@ -22,19 +23,35 @@ def build_nbdsh_command(socket_path: str, ranges: list[tuple[int, int]]) -> list
     ]
 
 
-def preload(mapper, *, socket_path: str = "/run/remotepfs/nbd.sock", runner=subprocess.run) -> int:
+def preload(
+    mapper,
+    *,
+    socket_path: str = "/run/remotepfs/nbd.sock",
+    runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    timeout_seconds: float = 60.0,
+) -> int:
     """Read mapper hot ranges through nbdsh and return bytes requested.
 
     Args:
         mapper: SectorMapper-compatible object exposing ``get_hot_ranges``.
         socket_path: nbdkit Unix socket path.
         runner: Injectable subprocess runner.
+        timeout_seconds: Maximum duration for one nbdsh pass.
 
     Raises:
-        PreloadError: If nbdsh returns a non-zero status.
+        PreloadError: If nbdsh returns a non-zero status or times out.
     """
     ranges = mapper.get_hot_ranges()
-    result = runner(build_nbdsh_command(socket_path, ranges), check=False, capture_output=True, text=True)
+    try:
+        result = runner(
+            build_nbdsh_command(socket_path, ranges),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise PreloadError("nbdsh metadata preload timed out") from error
     if result.returncode != 0:
         raise PreloadError(result.stderr.strip() or "nbdsh metadata preload failed")
     return sum(length for _, length in ranges)
