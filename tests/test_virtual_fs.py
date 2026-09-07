@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import pickle
 import struct
 import zlib
 
 from remotepfs.config import parse
-from remotepfs.exfat_builder import build_exfat, scan_directory
+from remotepfs.exfat_builder import _exfat_timestamp, build_exfat, scan_directory
 from remotepfs.sector_mapper import SectorMapper
 
 
@@ -131,6 +132,78 @@ def test_scan_directory_returns_sorted_recursive_entries(tmp_path) -> None:
         ("games/nested/b.txt", False, 3),
         ("games/z.txt", False, 1),
     ]
+
+
+def test_file_and_directory_timestamps_use_source_metadata(tmp_path) -> None:
+    """Encode source file and directory timestamps in exFAT entries."""
+    source_dir = tmp_path / "folder"
+    source_dir.mkdir()
+    source_file = source_dir / "game.bin"
+    source_file.write_bytes(b"payload")
+    directory_time_ns = 1_700_000_000_123_000_000
+    file_time_ns = 1_700_000_002_987_000_000
+    os.utime(source_dir, ns=(directory_time_ns, directory_time_ns))
+    os.utime(source_file, ns=(file_time_ns, file_time_ns))
+    directory_stat = source_dir.stat()
+    file_stat = source_file.stat()
+    config = parse(
+        f"""global:
+  image_size_gib: 1
+  cluster_size_kib: 64
+  label: TEST
+sources:
+  - name: local
+    protocol: nfs
+    endpoint: local:/export
+    mount_point: {tmp_path}
+entries:
+  - virtual_path: folder
+    source: {source_dir}
+    type: directory
+"""
+    )
+    mapper = SectorMapper.from_layout(build_exfat(config))
+    layout = mapper.layout
+
+    def cluster_bytes(cluster: int) -> bytes:
+        offset = (
+            layout.partition_start_lba + layout.cluster_heap_offset + (cluster - 2) * layout.sectors_per_cluster
+        ) * 512
+        return mapper.read_bytes(offset, layout.sectors_per_cluster * 512)
+
+    def assert_timestamp_fields(entry: bytes, source_stat: os.stat_result) -> None:
+        created_date, created_time, created_increment = _exfat_timestamp(
+            getattr(source_stat, "st_birthtime_ns", None) or source_stat.st_mtime_ns
+        )
+        modified_date, modified_time, modified_increment = _exfat_timestamp(source_stat.st_mtime_ns)
+        accessed_date, accessed_time, _ = _exfat_timestamp(source_stat.st_atime_ns)
+        assert struct.unpack_from("<H", entry, 8)[0] == created_time
+        assert struct.unpack_from("<H", entry, 10)[0] == created_date
+        assert struct.unpack_from("<H", entry, 12)[0] == modified_time
+        assert struct.unpack_from("<H", entry, 14)[0] == modified_date
+        assert struct.unpack_from("<H", entry, 16)[0] == accessed_time
+        assert struct.unpack_from("<H", entry, 18)[0] == accessed_date
+        assert entry[20] == created_increment
+        assert entry[21] == modified_increment
+        assert entry[22:25] == b"\x80\x80\x80"
+
+    try:
+        root = cluster_bytes(layout.root_dir_cluster)
+        assert_timestamp_fields(root[96:128], directory_stat)
+        nested_cluster = struct.unpack_from("<I", root, 96 + 32 + 20)[0]
+        nested = cluster_bytes(nested_cluster)
+        assert_timestamp_fields(nested[:32], file_stat)
+    finally:
+        mapper.close()
+
+
+def test_exfat_timestamp_clamps_range_and_keeps_subsecond_precision() -> None:
+    """Encode exFAT timestamp limits and 10 ms increments deterministically."""
+    minimum = 315532800 * 1_000_000_000
+    maximum = 4_354_819_199 * 1_000_000_000
+    assert _exfat_timestamp(minimum - 1) == _exfat_timestamp(minimum)
+    assert _exfat_timestamp(maximum + 1_000_000_000) == _exfat_timestamp(maximum + 999_000_000)
+    assert _exfat_timestamp(1_700_000_001_230_000_000)[2] == 123
 
 
 def test_directory_checksums_and_bitmap_cover_allocated_clusters(tmp_path) -> None:
