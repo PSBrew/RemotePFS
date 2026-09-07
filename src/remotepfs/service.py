@@ -19,8 +19,8 @@ from . import __version__
 from .api import create_app
 from .config import Config, ConfigError, load, parse, validate
 from .gadget_manager import GadgetManager
+from .mount_manager import MountManager
 from .nbdkit_manager import NbdkitManager
-from .nfs_manager import NfsManager
 
 
 @dataclass
@@ -38,17 +38,17 @@ class RemotePfsService:
 
     def __init__(
         self,
-        config_path: str = "/etc/remotepfs/remotepfs.conf",
+        config_path: str = "/etc/remotepfs/remotepfs.yaml",
         *,
         state_path: str = "/var/lib/remotepfs/mapper.state",
-        nfs_manager: NfsManager | None = None,
+        mount_manager: MountManager | None = None,
         nbd_manager: NbdkitManager | None = None,
         gadget_manager: GadgetManager | None = None,
     ) -> None:
         """Initialize service and injectable platform managers."""
         self.config_path = config_path
         self.state_path = state_path
-        self.nfs = nfs_manager or NfsManager()
+        self.mounts = mount_manager or MountManager()
         self.nbd = nbd_manager or NbdkitManager(state_path=state_path)
         self.gadget = gadget_manager or GadgetManager()
         self.started_at = time.monotonic()
@@ -108,8 +108,8 @@ class RemotePfsService:
         """Mount sources, validate paths, and build SectorMapper generation."""
         if platform.system() == "Linux":
             for source in config.sources:
-                if not self.nfs.is_mounted(source.mount_point):
-                    self.nfs.mount(source)
+                if not self.mounts.is_mounted(source.mount_point):
+                    self.mounts.mount(source)
         for entry in config.entries:
             source = Path(entry.source)
             if not source.exists():
@@ -231,7 +231,7 @@ class RemotePfsService:
                 "socket_path": self.nbd.socket_path,
                 "connections": 1 if self.nbd.is_ready() else 0,
             },
-            "nfs_mounts": [self.nfs.status(source).__dict__ for source in active.config.sources] if active else [],
+            "mounts": [self.mounts.status(source).__dict__ for source in active.config.sources] if active else [],
             "config": {
                 "path": self.config_path,
                 "last_loaded": active.created_at if active else datetime.now(UTC),
@@ -259,7 +259,7 @@ def run_server(config_path: str) -> None:
 def main(argv: list[str] | None = None) -> int:
     """CLI entry point for serve, compile, status, and shutdown."""
     parser = argparse.ArgumentParser(prog="remotepfs")
-    parser.add_argument("--config", default="/etc/remotepfs/remotepfs.conf")
+    parser.add_argument("--config", default="/etc/remotepfs/remotepfs.yaml")
     subparsers = parser.add_subparsers(dest="command", required=True)
     serve_parser = subparsers.add_parser("serve")
     serve_parser.add_argument("--config", default=argparse.SUPPRESS)

@@ -17,9 +17,9 @@ class FakeService:
             "service": {"version": "0.1.0", "uptime_seconds": 1, "state": "running", "state_detail": "serving"},
             "gadget": {"udc_bound": False, "udc_name": None, "lun_file": None, "lun_ro": True, "lun_size_bytes": None},
             "nbd": {"connected": False, "socket_path": "/run/remotepfs/nbd.sock"},
-            "nfs_mounts": [],
+            "mounts": [],
             "config": {
-                "path": "/tmp/remotepfs.conf",
+                "path": "/tmp/remotepfs.yaml",
                 "last_loaded": datetime.now(UTC),
                 "generation": 0,
                 "game_count": 0,

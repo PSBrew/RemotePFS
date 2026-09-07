@@ -335,7 +335,7 @@ def config(key, value):
 
 ```bash
 # 1. Compile config, build virtual exFAT layout, pickle mapper state
-remotepfs-ctl compile /etc/remotepfs/remotepfs.conf
+remotepfs compile /etc/remotepfs/remotepfs.yaml
 # → gen_id=abc123, image_size=154000000000, file_count=47
 
 # 2. Metadata preload (pread() warming before bind — V1 scope)
@@ -370,7 +370,7 @@ nbd-client -d /dev/nbd0 2>/dev/null
 kill $(cat /run/remotepfs/nbdkit.pid)
 
 # 3. Compile new config, activate (atomic generation swap)
-remotepfs-ctl compile /etc/remotepfs/remotepfs.conf
+remotepfs compile /etc/remotepfs/remotepfs.yaml
 # → gen_id=def456
 remotepfs-ctl activate def456
 # Under the hood: pickle new state → spawn new nbdkit → connect nbd-client

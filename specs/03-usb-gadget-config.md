@@ -26,21 +26,20 @@ PS5 USB host
 [Python plugin]  pread() + extents()
     |
     v
-[SectorMapper]  virtual exFAT ← config TOML
+ [SectorMapper]  virtual exFAT ← YAML config
     |
     v
-[NFS mounts]  NAS game files
+[Protocol source mounts] NFS exports or SMB 3.1.1 shares
 ```
 
 The USB gadget presents `/dev/nbd0` as a read-only mass storage LUN. The PS5 sees
 a standard USB block device with an exFAT filesystem. The exFAT metadata (boot
 sector, FAT, directory entries) is generated on-the-fly by the nbdkit Python
-plugin's sector mapper, backed by the config system's virtual path mappings to
-NFS files on the NAS.
+plugin's sector mapper, backed by protocol source paths.
 
 **No `.exfat` image file is ever created.** No `truncate`, no `mkfs.exfat`,
-no loopback mounts. The virtual exFAT is purely in-memory metadata plus NFS file
-data.
+no loopback mounts. The virtual exFAT is purely in-memory metadata plus source
+file data.
 
 ---
 
@@ -657,7 +656,7 @@ set -euo pipefail
 
 GADGET_DIR="/sys/kernel/config/usb_gadget/remotepfs"
 NBDKIT_SOCK="/run/remotepfs/nbd.sock"
-CONFIG_TOML="/etc/remotepfs/remotepfs.conf"
+CONFIG_YAML="/etc/remotepfs/remotepfs.yaml"
 IMAGE_SIZE_BYTES=2199023255552  # Example: 2 TiB (adjust to actual image size)
 MAPPER_STATE="/run/remotepfs/mapper.state"
 

@@ -8,23 +8,22 @@ from remotepfs.sector_mapper import SectorMapper
 
 
 def _config(tmp_path, filename: str) -> str:
-    return f'''[global]
-image_size_gib = 1
-cluster_size_kib = 64
-label = "REMOTEPFS"
-oem_name = "REMOTEPF"
-
-[[sources]]
-name = "local"
-server = "127.0.0.1"
-export = "/exports"
-mount_point = "{tmp_path}"
-
-[[entries]]
-virtual_path = "{filename}"
-source = "{tmp_path / filename}"
-type = "file"
-'''
+    return f"""global:
+  image_size_gib: 1
+  cluster_size_kib: 64
+  label: REMOTEPFS
+  oem_name: REMOTEPF
+sources:
+  - name: local
+    protocol: nfs
+    endpoint: 127.0.0.1:/exports
+    mount_point: {tmp_path}
+    options: ro
+entries:
+  - virtual_path: {filename}
+    source: {tmp_path / filename}
+    type: file
+"""
 
 
 def test_build_exfat_and_mapper_reads_file_and_metadata(tmp_path) -> None:

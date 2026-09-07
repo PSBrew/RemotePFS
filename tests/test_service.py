@@ -12,22 +12,23 @@ from remotepfs.service import RemotePfsService
 def test_service_starts_and_health_works_without_sbc_hardware(tmp_path) -> None:
     source = tmp_path / "game.bin"
     source.write_bytes(b"game")
-    config_path = tmp_path / "remotepfs.conf"
+    config_path = tmp_path / "remotepfs.yaml"
     config_path.write_text(
-        f'''[global]
-image_size_gib = 1
-label = "REMOTEPFS"
-oem_name = "REMOTEPF"
-[[sources]]
-name = "local"
-server = "localhost"
-export = "/exports"
-mount_point = "{tmp_path}"
-[[entries]]
-virtual_path = "game.bin"
-source = "{source}"
-type = "file"
-''',
+        f"""global:
+  image_size_gib: 1
+  label: REMOTEPFS
+  oem_name: REMOTEPF
+sources:
+  - name: local
+    protocol: nfs
+    endpoint: localhost:/exports
+    mount_point: {tmp_path}
+    options: ro
+entries:
+  - virtual_path: game.bin
+    source: {source}
+    type: file
+""",
         encoding="utf-8",
     )
     service = RemotePfsService(str(config_path))
@@ -41,26 +42,27 @@ type = "file"
 def test_linux_compile_mounts_unmounted_sources(tmp_path, monkeypatch) -> None:
     source = tmp_path / "game.bin"
     source.write_bytes(b"game")
-    config_path = tmp_path / "remotepfs.conf"
+    config_path = tmp_path / "remotepfs.yaml"
     config_path.write_text(
-        f'''[global]
-image_size_gib = 1
-label = "REMOTEPFS"
-oem_name = "REMOTEPF"
-[[sources]]
-name = "nas"
-server = "nas"
-export = "/games"
-mount_point = "{tmp_path}"
-[[entries]]
-virtual_path = "game.bin"
-source = "{source}"
-type = "file"
-''',
+        f"""global:
+  image_size_gib: 1
+  label: REMOTEPFS
+  oem_name: REMOTEPF
+sources:
+  - name: nas
+    protocol: nfs
+    endpoint: nas:/games
+    mount_point: {tmp_path}
+    options: ro
+entries:
+  - virtual_path: game.bin
+    source: {source}
+    type: file
+""",
         encoding="utf-8",
     )
 
-    class FakeNfs:
+    class FakeMounts:
         def __init__(self) -> None:
             self.mounted: list[str] = []
 
@@ -70,12 +72,12 @@ type = "file"
         def mount(self, source) -> None:
             self.mounted.append(source.mount_point)
 
-    nfs = FakeNfs()
+    mounts = FakeMounts()
     monkeypatch.setattr("remotepfs.service.platform.system", lambda: "Linux")
-    service = RemotePfsService(str(config_path), nfs_manager=nfs)
+    service = RemotePfsService(str(config_path), mount_manager=mounts)
     result = service.compile_config(config_path.read_text(encoding="utf-8"))
     assert result["status"] == "compiled"
-    assert nfs.mounted == [str(tmp_path)]
+    assert mounts.mounted == [str(tmp_path)]
 
 
 def test_linux_startup_mounts_and_activates_stack(tmp_path, monkeypatch) -> None:
@@ -83,26 +85,27 @@ def test_linux_startup_mounts_and_activates_stack(tmp_path, monkeypatch) -> None
 
     source = tmp_path / "game.bin"
     source.write_bytes(b"game")
-    config_path = tmp_path / "remotepfs.conf"
+    config_path = tmp_path / "remotepfs.yaml"
     config_path.write_text(
-        f'''[global]
-image_size_gib = 1
-label = "REMOTEPFS"
-oem_name = "REMOTEPF"
-[[sources]]
-name = "nas"
-server = "nas"
-export = "/games"
-mount_point = "{tmp_path}"
-[[entries]]
-virtual_path = "game.bin"
-source = "{source}"
-type = "file"
-''',
+        f"""global:
+  image_size_gib: 1
+  label: REMOTEPFS
+  oem_name: REMOTEPF
+sources:
+  - name: nas
+    protocol: nfs
+    endpoint: nas:/games
+    mount_point: {tmp_path}
+    options: ro
+entries:
+  - virtual_path: game.bin
+    source: {source}
+    type: file
+""",
         encoding="utf-8",
     )
 
-    class FakeNfs:
+    class FakeMounts:
         def is_mounted(self, mount_point: str) -> bool:
             return False
 
@@ -153,7 +156,7 @@ type = "file"
     service = RemotePfsService(
         str(config_path),
         state_path=str(tmp_path / "mapper.state"),
-        nfs_manager=FakeNfs(),
+        mount_manager=FakeMounts(),
         nbd_manager=nbd,
         gadget_manager=gadget,
     )

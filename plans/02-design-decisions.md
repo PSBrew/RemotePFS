@@ -54,48 +54,50 @@ Document finalized 2026-09-05. Records architectural decisions made during the d
 - Directory recursion: `type=directory` config entries trigger recursive scan of NFS source, building subdirectory exFAT entries
 - Large directories possible — many games means large root directory, FAT grows proportionally
 
-## DD-03: Config-Driven Virtual Layout (TOML)
+## DD-03: Protocol-Backed Config-Driven Virtual Layout (YAML)
 
-**Decision:** Use TOML config file (`/etc/remotepfs/remotepfs.conf`) defining NFS mount sources and virtual path mappings. Multiple NFS servers supported.
+**Decision:** Use YAML config file (`/etc/remotepfs/remotepfs.yaml`) defining
+generic protocol-backed sources and virtual path mappings. V1 supports NFS and
+SMB 3.1.1 through Linux's CIFS client. Future HTTP(S), FTP, and torrent/P2P
+providers can reuse the source contract.
 
-**Context:** User wanted to customize the virtual filesystem layout: map virtual paths to specific remote folders, support files and directories, point to different remote servers. Config must support hot-reload without service restart.
+**Context:** User wanted customizable virtual filesystem layout: map virtual
+paths to remote folders, support files and directories, and use multiple
+servers. Config must support hot reload without service restart.
 
-**Format (spec 07):**
-
-```toml
-# remotepfs.conf — Virtual exFAT layout for RemotePFS
-
-[global]
-image_size_gib = 2048          # Virtual exFAT image size (GiB)
-cluster_size_kib = 64          # Locked to 64 (ShadowMountPlus)
-label = "REMOTEPFS"            # Volume label (11 chars max, uppercase)
-oem_name = "REMOTEPFS"         # OEM name (8 chars)
-
-[[sources]]
-name = "nas1"
-server = "192.168.1.100"
-export = "/volume1/games"
-mount_point = "/mnt/nas1"
-nfs_options = "nfsvers=4.1,nconnect=2,rsize=1048576,wsize=1048576,hard,noatime"
-
-[[entries]]
-virtual_path = "fps games"     # Directory in exFAT root (recursive scan)
-source = "/mnt/nas1/fpsgames/"
-type = "directory"
-
-[[entries]]
-virtual_path = "game.iso"      # Single file entry
-source = "/mnt/nas2/images/ps5game.iso"
-type = "file"
+```yaml
+global:
+  image_size_gib: 2048
+  cluster_size_kib: 64
+  label: REMOTEPFS
+  oem_name: REMOTEPF
+sources:
+  - name: nas1
+    protocol: cifs
+    endpoint: //192.168.1.100/games
+    mount_point: /mnt/nas1
+    read_only: true
+    options: ro,vers=3.1.1,cache=strict,actimeo=30,rsize=1048576
+    credentials_file: /etc/remotepfs/nas1.credentials
+entries:
+  - virtual_path: fps games
+    source: /mnt/nas1/fpsgames/
+    type: directory
 ```
 
+**Alternatives considered:**
+
+- JSON: verbose for hand-edited nested layouts.
+- INI: weak support for repeated source and entry records.
+- TOML: good syntax, but YAML is user preference and supports future provider-specific fields.
+
 **Consequences:**
-- `[[sources]]` defines NFS mounts (server, export, mount point, options)
-- `[[entries]]` defines virtual paths with type (`file` or `directory`) and source path
-- Source paths reference NFS mount points, not raw servers
-- Multiple servers supported (each with separate NFS mount)
-- Validation rejects invalid configs before any layout change (field-level errors, spec 07)
-- TOML chosen over YAML/JSON per mkpfs conventions (TOML is standard in Python ecosystem)
+
+- YAML parser dependency (`PyYAML`) is required by service.
+- Config never contains credential values; CIFS references external mode-0600 files.
+- `protocol`, `endpoint`, `mount_point`, `read_only`, `options`, and optional
+  `credentials_file` form generic source contract.
+- Provider-specific validation and mounting remain isolated in provider managers.
 
 ## DD-04: Config Hot-Reload Contract (Two-Phase API)
 
@@ -198,7 +200,7 @@ PSBrew/RemotePFS (private)
 │   ├── 01-project-roadmap.md
 │   └── 02-design-decisions.md
 ├── src/remotepfs/
-│   ├── config.py              — TOML validation and config model
+│   ├── config.py              — YAML validation and config model
 │   ├── exfat_builder.py       — exFAT metadata generation
 │   ├── sector_mapper.py       — sector offset to source file mapping
 │   ├── remotepfs_nbd.py       — nbdkit Python plugin (API v2)
@@ -209,7 +211,7 @@ PSBrew/RemotePFS (private)
 │   ├── api.py                 — FastAPI application
 │   └── service.py             — privileged orchestration loop
 ├── config/
-│   ├── remotepfs.conf.example
+│   ├── remotepfs.yaml.example
 │   ├── remotepfs.service
 │   └── remotepfs-nbdkit.service
 ├── tests/
@@ -238,7 +240,7 @@ root, while `remotepfs-nbdkit.service` owns the socket and runs nbdkit as
 | Multi-source NFS mounts | Config-driven | — |
 | NBD server | nbdkit + Python plugin, Unix socket, ro | ublk optimization |
 | Virtual exFAT builder | In-memory, ro, single LUN | — |
-| Config-driven virtual layout | TOML, file + directory | — |
+| Config-driven virtual layout | YAML, file + directory | — |
 | Config hot-reload | Two-phase compile/activate | — |
 | Metadata preloading | pread() warming via NBD (example ~35–40 MiB for 512 GiB/64 KiB) before UDC bind | — |
 | USB gadget (BOT) | Single LUN, ro | UAS (f_tcm) |

@@ -1,15 +1,17 @@
 # SBC installation
 
-Hardware validation requires Linux SBC with USB gadget mode. macOS cannot validate kernel NBD, ConfigFS, nbdkit, NFS mounts, or PS5 enumeration.
+Hardware validation requires Linux SBC with USB gadget mode. macOS cannot validate kernel NBD, ConfigFS, nbdkit, network mounts, or PS5 enumeration.
 
 ## Requirements
 
 - Linux SBC with USB 3 OTG/device port and UDC support.
 - Debian/Ubuntu/Armbian. RemotePFS requires Python 3.11+ for its service.
 - At least 4 GiB RAM recommended. Systems with approximately 4 GiB RAM and adequate free storage are suitable for initial validation.
-- `nbd`, `libcomposite`, and USB mass-storage ConfigFS kernel support.
-- NAS exporting game files through NFS v4.1.
+- Linux CIFS client support for the default SMB backend, plus `nbd`, `libcomposite`, and USB mass-storage ConfigFS kernel support.
+- NAS SMB share with read-only credentials.
 - USB-C data cable and stable external SBC power.
+
+RemotePFS also retains NFS support. NFS requires matching kernel client support and `nfs-common`; vendor kernels can omit NFS even when `nfs-common` is installed.
 
 Debian 11 ships Python 3.9. Use `uv` to install and select Python 3.11; installing Debian's `python3` package alone is not sufficient.
 
@@ -37,16 +39,18 @@ grep -E '^CONFIG_(BLK_DEV_NBD|USB_LIBCOMPOSITE|USB_CONFIGFS|USB_CONFIGFS_F_MASS_
 
 Debian Bullseye package name is `nbdkit-plugin-python`, not `nbdkit-plugin-python3`.
 
-Important: Debian's nbdkit Python plugin runs with its system Python interpreter, not the RemotePFS `.venv`. The tested Radxa Cubie A7S image reports `python_version=3.9.2` from `nbdkit --dump-plugin python`; installing Python 3.11 with `uv` does not change the nbdkit plugin interpreter. The nbdkit import path must remain Python 3.9-compatible. RemotePFS keeps TOML parsing in the service process and does not import `tomllib` from the plugin path. Tests enforce Python 3.9 parsing for the plugin import chain.
+Important: Debian's nbdkit Python plugin runs with its system Python interpreter, not the RemotePFS `.venv`. The tested Radxa Cubie A7S image reports `python_version=3.9.2` from `nbdkit --dump-plugin python`; installing Python 3.11 with `uv` does not change the nbdkit plugin interpreter. The nbdkit import path must remain Python 3.9-compatible. RemotePFS parses YAML in the service process; the plugin does not import the YAML parser. Tests enforce Python 3.9 parsing for the plugin import chain.
 
 ```bash
 sudo apt update
-sudo apt install -y git nbdkit nbdkit-plugin-python nbd-client nfs-common \
+sudo apt install -y nbdkit nbdkit-plugin-python nbd-client cifs-utils nfs-common \
   kmod curl ca-certificates
 curl -LsSf https://astral.sh/uv/install.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 sudo install -m 0755 "$HOME/.local/bin/uv" /usr/local/bin/uv
-sudo /usr/local/bin/uv python install 3.11
+sudo mkdir -p /opt/remotepfs/python
+sudo env UV_PYTHON_INSTALL_DIR=/opt/remotepfs/python \
+  /usr/local/bin/uv python install 3.11
 uv --version
 nbdkit --dump-plugin python
 nbdkit --version
@@ -54,9 +58,22 @@ nbdkit --version
 
 Obtain source on the SBC before deployment. Set `REPOSITORY_URL` to the repository URL and configure Git authentication first when the repository is private. Alternatively, copy the source tree to `/tmp/remotepfs-src` using any secure transfer method.
 
+For a Git checkout, install Git and clone the repository:
+
 ```bash
+sudo apt install -y git
 REPOSITORY_URL="<repository-url>"
 git clone --depth 1 "$REPOSITORY_URL" /tmp/remotepfs-src
+```
+
+If Git is unavailable, download a source archive instead:
+
+```bash
+SOURCE_ARCHIVE_URL="<source-archive-url>"
+curl -fL "$SOURCE_ARCHIVE_URL" -o /tmp/remotepfs.tar.gz
+rm -rf /tmp/remotepfs-src
+mkdir -p /tmp/remotepfs-src
+tar -xzf /tmp/remotepfs.tar.gz -C /tmp/remotepfs-src --strip-components=1
 ```
 
 Copy source into the deployment path:
@@ -65,39 +82,64 @@ Copy source into the deployment path:
 sudo mkdir -p /opt/remotepfs /etc/remotepfs /var/lib/remotepfs /opt/remotepfs/source
 sudo cp -a /tmp/remotepfs-src/. /opt/remotepfs/source/
 cd /opt/remotepfs/source
-sudo uv sync --frozen --python 3.11
-sudo cp config/remotepfs.conf.example /etc/remotepfs/remotepfs.conf
+sudo env UV_PYTHON_INSTALL_DIR=/opt/remotepfs/python \
+  /usr/local/bin/uv sync --frozen --python 3.11
+sudo cp config/remotepfs.yaml.example /etc/remotepfs/remotepfs.yaml
 sudo cp config/remotepfs.service config/remotepfs-nbdkit.service /etc/systemd/system/
-sudo chown root:remotepfs /var/lib/remotepfs
+```
+
+Create service identity and permissions. Commands are safe to rerun:
+
+```bash
+if ! getent group remotepfs >/dev/null; then
+  sudo groupadd --system remotepfs
+fi
+if ! id remotepfs-nbd >/dev/null 2>&1; then
+  sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
+    --gid remotepfs remotepfs-nbd
+fi
+sudo chown root:remotepfs /etc/remotepfs/remotepfs.yaml /var/lib/remotepfs
+sudo chmod 0640 /etc/remotepfs/remotepfs.yaml
 sudo chmod 0750 /var/lib/remotepfs
 ```
 
-Create service identity and permissions:
+Validate installed unit files before editing or starting services:
 
 ```bash
-sudo groupadd --system remotepfs
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin \
-  --gid remotepfs remotepfs-nbd
-sudo chown root:remotepfs /etc/remotepfs/remotepfs.conf
-sudo chmod 0640 /etc/remotepfs/remotepfs.conf
+sudo systemctl daemon-reload
+sudo systemd-analyze verify \
+  /etc/systemd/system/remotepfs.service \
+  /etc/systemd/system/remotepfs-nbdkit.service
 ```
 
-The systemd unit runs orchestration as `root` because it must mount NFS,
-connect `/dev/nbd0`, and write ConfigFS. It starts the separate
+The systemd unit runs orchestration as `root` because it must mount network
+filesystems, connect `/dev/nbd0`, and write ConfigFS. It starts the separate
 `remotepfs-nbdkit.service`, which runs nbdkit as
 `remotepfs-nbd:remotepfs`. Do not run the nbdkit unit as root or change the
 orchestration unit to the nbdkit service account.
 
-Edit `/etc/remotepfs/remotepfs.conf`. Keep configured `mount_point` paths under `/mnt`; the hardened orchestration unit grants write access there for NFS mount directories. Mount options must include `ro,hard,nconnect=2,rsize=1048576,noatime,nosuid,nodev,noexec`.
+Edit `/etc/remotepfs/remotepfs.yaml`. Keep configured `mount_point` paths under
+`/mnt`; the hardened orchestration unit grants write access there. CIFS options
+must include `ro`; the recommended SMB dialect is `vers=3.1.1`.
 
-Verify source mount before compiling:
+Create credentials file outside repository:
+
+```bash
+sudo install -m 0600 /dev/null /etc/remotepfs/nas1.credentials
+sudoedit /etc/remotepfs/nas1.credentials
+```
+
+Add `username=...` and `password=...` lines, then verify SMB 3.1.1:
 
 ```bash
 sudo mkdir -p /mnt/nas1
-sudo mount -t nfs4 -o ro,hard,nconnect=2,rsize=1048576,noatime,nosuid,nodev,noexec \
-  NAS_IP:/export/path /mnt/nas1
+sudo mount -t cifs -o ro,vers=3.1.1,cache=strict,actimeo=30,rsize=1048576,credentials=/etc/remotepfs/nas1.credentials \
+  //NAS_IP/games /mnt/nas1
 find /mnt/nas1 -maxdepth 2 -type f | head
+sudo umount /mnt/nas1
 ```
+
+For NFS, set `protocol: nfs` and use an NFS endpoint with `options`.
 
 
 ## Start and verify

@@ -281,7 +281,7 @@ management and status endpoints.
 
 | Method | Path                     | Purpose                                  | Risk Level  |
 |--------|--------------------------|------------------------------------------|-------------|
-| POST   | `/api/config/compile`    | Validate + compile TOML config           | Medium      |
+| POST   | `/api/config/compile`    | Validate + compile YAML config           | Medium      |
 | POST   | `/api/config/activate`   | Atomically swap active generation         | High        |
 | GET    | `/api/status`            | Current state (bound, game count, etc.)   | Low         |
 | POST   | `/api/eject`             | Gracefully unbind UDC                    | High        |
@@ -303,12 +303,10 @@ The API has no authentication mechanism. Rationale:
 - **Localhost-only binding is the authentication.** Only processes running on
   the SBC can reach `127.0.0.1:8080`. SSH access to the SBC is the
   prerequisite for API access.
-- **Config is not secret.** The TOML config contains no credentials, keys, or
-  secrets (see section 6). Authenticating API access adds complexity without
-  protecting anything sensitive.
+- **Config contains no secret values.** YAML may reference credential files,
+  but never embeds credentials or keys.
 - **Simplicity.** No token management, no TLS certificates, no credential
   rotation. The SBC is a single-user appliance.
-
 Future versions MAY add authentication if remote API access is required
 (e.g., a companion mobile app). For V1, localhost binding is sufficient.
 
@@ -316,11 +314,11 @@ Future versions MAY add authentication if remote API access is required
 
 #### POST /api/config/compile
 
-**Threat: Malicious TOML input.** Attacker with shell access submits a crafted
-config to crash the compiler, exhaust memory, or trigger path traversal.
+**Threat: Malicious YAML input.** Attacker with shell access submits a crafted
+config to crash compiler, exhaust memory, or trigger path traversal.
 
 **Mitigations:**
-- TOML parser in strict mode: rejects duplicate keys, invalid UTF-8, and type mismatches.
+- Safe YAML parser rejects arbitrary object construction and type mismatches.
 - Path traversal defense: reject `entries.virtual_path` and `entries.source` containing `../`, `./`, or `~`; also reject `entries.source` outside configured `mount_point`s.
 - Size limits: reject config bodies larger than 1 MiB. Reject >10,000 entries. Reject `global.image_size_gib` values outside limits.
 - Memory limit: compile process bounded by systemd `MemoryMax=2G`.
@@ -379,27 +377,27 @@ response_headers = {
 
 ### 6.1 No Secret Material
 
-The TOML config contains no credentials, keys, tokens, or secrets:
+The YAML config contains no credentials, keys, tokens, or secret values. It may
+reference an external credential file for CIFS:
 
-```toml
-# What the config contains (safe):
-[global]
-image_size_gib = 2048
-cluster_size_kib = 64
-label = "PS5 Games"
-oem_name = "REMOTEPFS"
-
-[[sources]]
-name = "synology"
-server = "192.168.1.100"
-export = "/volume1/games"
-mount_point = "/mnt/nas1"
-nfs_options = "nfsvers=4.1,nconnect=4,rsize=1048576,hard,noatime"
-
-[[entries]]
-virtual_path = "Elden Ring"
-source = "/mnt/nas1/ps5-games/elden-ring"
-type = "directory"
+```yaml
+global:
+  image_size_gib: 2048
+  cluster_size_kib: 64
+  label: REMOTEPFS
+  oem_name: REMOTEPF
+sources:
+  - name: nas1
+    protocol: cifs
+    endpoint: //NAS_IP/games
+    mount_point: /mnt/nas1
+    read_only: true
+    options: ro,vers=3.1.1,cache=strict,actimeo=30,rsize=1048576
+    credentials_file: /etc/remotepfs/nas1.credentials
+entries:
+  - virtual_path: games
+    source: /mnt/nas1/games
+    type: directory
 ```
 
 NFS authentication is handled at mount time by the Linux kernel NFS client.
@@ -450,8 +448,8 @@ lie under one of the configured `mount_point` directories.
 ### 6.4 File Permissions
 
 ```bash
-chown root:remotepfs /etc/remotepfs/remotepfs.conf
-chmod 0640 /etc/remotepfs/remotepfs.conf
+chown root:remotepfs /etc/remotepfs/remotepfs.yaml
+chmod 0640 /etc/remotepfs/remotepfs.yaml
 ```
 
 Readable by root and `remotepfs` group. Not world-readable.
@@ -460,18 +458,17 @@ Readable by root and `remotepfs` group. Not world-readable.
 
 ### 7.1 Threat: Input Validation (Config Parsing)
 
-**Scenario:** Attacker with shell access submits a malicious TOML config.
+**Scenario:** Attacker with shell access submits a malicious YAML config.
 
 **Attack vectors:**
-- TOML parser bomb: deeply nested tables, excessively long keys.
-- Path traversal in `entries.virtual_path` or `entries.source`.
+- YAML parser abuse: deeply nested structures and excessively large scalar values.
 - Invalid sizes in `global.image_size_gib` or `global.cluster_size_kib`.
 - Excessively large config (DoS via memory exhaustion).
 
 **Mitigations:**
 - Config body size limit: 1 MiB (reject before parsing).
-- TOML parser in strict mode with depth limit (max 32 nesting levels).
-- Path traversal rejection (see section 6.3).
+- Strict safe YAML loader rejects arbitrary object construction, duplicate keys,
+  aliases, and anchor expansion; parser recursion errors fail as config errors.
 - Size validation bounds (see section 6.2).
 - Compile runs in a subprocess with `MemoryMax=2G` via systemd.
 - Maximum 10,000 game entries.
@@ -600,10 +597,8 @@ or SCSI commands.
 | NBD socket permissions | `stat -c '%a %U:%G' /run/remotepfs/nbd.sock` → `600 remotepfs-nbd:remotepfs` |
 | Socket directory permissions | `stat -c '%a %U:%G' /run/remotepfs` → `700 remotepfs-nbd:remotepfs` |
 | API localhost-only | `ss -tlnp | grep 8080` → `127.0.0.1:8080`                    |
-| Config file permissions | `stat -c '%a %U:%G' /etc/remotepfs/remotepfs.conf` → `640 root:remotepfs` |
-| nbdkit service user | `systemctl show remotepfs-nbdkit | grep ^User=` → `remotepfs-nbd` |
-| nbdkit capabilities | `systemctl show remotepfs-nbdkit | grep CapabilityBoundingSet` |
-| No secrets in config | `grep -i '\(password\|secret\|key\|token\|credential\)' /etc/remotepfs/remotepfs.conf` → no output |
+| Config file permissions | `stat -c '%a %U:%G' /etc/remotepfs/remotepfs.yaml` → `640 root:remotepfs` |
+| No secrets in config | `grep -i '\(password\|secret\|key\|token\)' /etc/remotepfs/remotepfs.yaml` → no output |
 
 ---
 

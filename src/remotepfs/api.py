@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
@@ -45,12 +44,12 @@ class NbdInfo(BaseModel):
     read_errors: int = 0
 
 
-class NfsMountInfo(BaseModel):
-    """NFS mount status."""
+class MountInfo(BaseModel):
+    """Network mount status."""
 
     name: str
-    server: str
-    export: str
+    protocol: str
+    endpoint: str
     mount_point: str
     mounted: bool
     state: str
@@ -80,7 +79,7 @@ class StatusResponse(BaseModel):
     service: ServiceInfo
     gadget: GadgetInfo
     nbd: NbdInfo
-    nfs_mounts: list[NfsMountInfo]
+    mounts: list[MountInfo]
     config: ConfigInfo
     system: SystemInfo
 
@@ -217,7 +216,7 @@ def create_app(service: Any) -> FastAPI:
 
     @app.put("/api/config", response_model=ConfigReplaceResponse)
     async def put_config(request: Request) -> ConfigReplaceResponse:
-        """Replace configuration from TOML or JSON body."""
+        """Replace configuration from YAML or JSON body."""
         body = await request.body()
         if len(body) > MAX_CONFIG_BYTES:
             raise HTTPException(
@@ -225,19 +224,16 @@ def create_app(service: Any) -> FastAPI:
                 detail={"code": "PAYLOAD_TOO_LARGE", "message": "Config body exceeds 1 MiB limit"},
             )
         content_type = request.headers.get("content-type", "")
-        if "toml" not in content_type and "json" not in content_type:
+        if not any(kind in content_type for kind in ("yaml", "yml", "json")):
             raise HTTPException(
                 status_code=415,
                 detail={
                     "code": "UNSUPPORTED_MEDIA_TYPE",
-                    "message": "Content-Type must be application/toml or application/json",
+                    "message": "Content-Type must be application/yaml or application/json",
                 },
             )
         try:
-            text = body.decode("utf-8")
-            if "json" in content_type:
-                text = json.dumps(json.loads(text))
-            return await run_in_threadpool(service.replace_config, text)
+            return await run_in_threadpool(service.replace_config, body.decode("utf-8"))
         except ConfigError as exc:
             return _config_error_response(exc)  # type: ignore[return-value]
 

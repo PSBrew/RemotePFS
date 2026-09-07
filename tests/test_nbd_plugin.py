@@ -16,20 +16,21 @@ def _mapper(tmp_path) -> SectorMapper:
     source = tmp_path / "game.bin"
     source.write_bytes(b"plugin-data")
     config = parse(
-        f'''[global]
-image_size_gib = 1
-label = "REMOTEPFS"
-oem_name = "REMOTEPF"
-[[sources]]
-name = "s"
-server = "x"
-export = "/e"
-mount_point = "{tmp_path}"
-[[entries]]
-virtual_path = "game.bin"
-source = "{source}"
-type = "file"
-'''
+        f"""global:
+  image_size_gib: 1
+  label: REMOTEPFS
+  oem_name: REMOTEPF
+sources:
+  - name: s
+    protocol: nfs
+    endpoint: x:/e
+    mount_point: {tmp_path}
+    options: ro
+entries:
+  - virtual_path: game.bin
+    source: {source}
+    type: file
+"""
     )
     return SectorMapper.from_layout(build_exfat(config))
 

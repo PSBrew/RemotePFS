@@ -2,66 +2,63 @@
 
 ## Overview
 
-The config system defines NFS mount sources and virtual exFAT layout mappings. The sector mapper translates NBD sector requests into NFS file reads using this configuration. Together they form the core translation layer: "PS5 reads sector N" → "read byte range [X, X+512) from NFS file Y".
+The config system defines protocol-backed sources and virtual exFAT layout mappings. NFS and SMB/CIFS are supported in V1. Future providers such as HTTP(S), FTP, and torrent/P2P can reuse the generic source contract without changing virtual layout entries. The sector mapper translates NBD sector requests into source file reads.
 
-## Configuration Format (TOML)
+## Configuration Format (YAML)
 
 ### File Location
 
-`/etc/remotepfs/remotepfs.conf`
+`/etc/remotepfs/remotepfs.yaml`
 
 ### Schema
 
-```toml
-# remotepfs.conf — Virtual exFAT layout for RemotePFS
+```yaml
+# remotepfs.yaml — Virtual exFAT layout for RemotePFS
 
-# Global settings
-[global]
-image_size_gib = 2048          # Virtual exFAT image size (GiB)
-cluster_size_kib = 64          # Cluster size (KiB) — must match ShadowMountPlus: 64
-label = "RemotePFS"            # Volume label (11 chars max, uppercase)
-oem_name = "REMOTEPFS"         # OEM name (8 chars)
+global:
+  image_size_gib: 2048
+  cluster_size_kib: 64
+  label: REMOTEPFS
+  oem_name: REMOTEPF
 
-# NFS mount sources
-[[sources]]
-name = "nas1"
-server = "192.168.1.100"
-export = "/volume1/games"
-mount_point = "/mnt/nas1"
-nfs_options = "nfsvers=4.1,nconnect=4,rsize=1048576,wsize=1048576,hard,noatime"
+# Protocol-backed sources
+sources:
+  - name: nas1
+    protocol: nfs
+    endpoint: 192.168.1.100:/volume1/games
+    mount_point: /mnt/nas1
+    read_only: true
+    options: ro,nfsvers=4.1,nconnect=4,rsize=1048576,hard,noatime
 
-[[sources]]
-name = "nas2"
-server = "192.168.1.101"
-export = "/volume1/moregames"
-mount_point = "/mnt/nas2"
-nfs_options = "nfsvers=4.1,nconnect=4,rsize=1048576,wsize=1048576,hard,noatime"
+  - name: nas2
+    protocol: cifs
+    endpoint: //192.168.1.101/moregames
+    mount_point: /mnt/nas2
+    read_only: true
+    options: ro,vers=3.1.1,cache=strict,actimeo=30,rsize=1048576
+    credentials_file: /etc/remotepfs/nas2.credentials
 
-# Virtual layout entries
-[[entries]]
-virtual_path = "fps games"     # PS5 shows this as directory name (max 255 chars)
-source = "/mnt/nas1/fpsgames/" # NFS path relative to mount point
-type = "directory"             # Recursively scan and include subdirs/files
+entries:
+  - virtual_path: fps games
+    source: /mnt/nas1/fpsgames/
+    type: directory
 
-[[entries]]
-virtual_path = "RPG Collection"
-source = "/mnt/nas1/rpg/"
-type = "directory"
+  - virtual_path: RPG Collection
+    source: /mnt/nas1/rpg/
+    type: directory
 
-[[entries]]
-virtual_path = "game.iso"
-source = "/mnt/nas2/images/ps5game.iso"
-type = "file"                  # Single file; virtual_path treated as leaf filename
+  - virtual_path: game.iso
+    source: /mnt/nas2/images/ps5game.iso
+    type: file
 
-[[entries]]
-virtual_path = "standalone.pkg"
-source = "/mnt/nas2/packages/mygame.pkg"
-type = "file"
+  - virtual_path: standalone.pkg
+    source: /mnt/nas2/packages/mygame.pkg
+    type: file
 ```
 
 ### Field Reference
 
-#### `[global]`
+#### `global`
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -70,22 +67,24 @@ type = "file"
 | `label` | str | "RemotePFS" | Volume label, uppercase, 11 chars max |
 | `oem_name` | str | "REMOTEPFS" | OEM name, 8 chars |
 
-#### `[[sources]]`
+#### `sources[]`
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | str | Yes | Unique identifier for this source |
-| `server` | str | Yes | NFS server IP or hostname |
-| `export` | str | Yes | NFS export path on server |
-| `mount_point` | str | Yes | Local mount directory (created if missing) |
-| `nfs_options` | str | No | Extra mount options (appended to defaults) |
+| `name` | str | Yes | Unique source identifier |
+| `protocol` | str | Yes | Provider identifier, such as `nfs` or `cifs` |
+| `endpoint` | str | Yes | Provider endpoint. NFS uses `server:/export`; CIFS uses `//server/share` |
+| `mount_point` | str | Yes in V1 | Local provider mount directory |
+| `read_only` | bool | No | Defaults to `true`; `false` is rejected |
+| `options` | str | No | Provider options. NFS/CIFS options must include standalone `ro` and reject `rw` |
+| `credentials_file` | str | No | Absolute root-owned `0600` credential file for providers requiring credentials |
 
-#### `[[entries]]`
+#### `entries[]`
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `virtual_path` | str | Yes | Path shown in exFAT root directory. Max 255 chars. |
-| `source` | str | Yes | NFS source path (must be under one of the sources' mount points) |
+| `source` | str | Yes | Provider path under one of the sources' mount points |
 | `type` | str | Yes | `"file"` (single file) or `"directory"` (recursive scan) |
 
 ### Validation Rules
@@ -97,7 +96,7 @@ type = "file"
 5. Every `entries[].source` path must be under a valid `sources[].mount_point`
 6. `entries[].virtual_path` must be unique (no duplicates)
 7. `entries[].virtual_path` must not contain `/` (flat root directory in V1; subdirectories are collected under the virtual_path directory entry)
-8. At least one `[[sources]]` and one `[[entries]]` must exist
+8. At least one `sources` and one `entries` item must exist
 9. Source names must be unique
 
 ## Config Parsing & Validation
@@ -106,9 +105,9 @@ type = "file"
 
 ```python
 class ConfigManager:
-    """Parse, validate, and manage RemotePFS TOML config."""
+    """Parse, validate, and manage RemotePFS YAML config."""
 
-    def __init__(self, config_path: str = "/etc/remotepfs/remotepfs.conf"): ...
+    def __init__(self, config_path: str = "/etc/remotepfs/remotepfs.yaml"): ...
 
     def load(self) -> Config:  # Parse + validate from disk
         """Load and validate config from disk. Raises ConfigError on failure."""
@@ -136,10 +135,12 @@ class Config:
 
 class SourceConfig:
     name: str
-    server: str
-    export: str
+    protocol: str
+    endpoint: str
     mount_point: str
-    nfs_options: str
+    read_only: bool = True
+    options: str = ""
+    credentials_file: str | None = None
 
 
 class EntryConfig:
@@ -156,7 +157,7 @@ class ConfigError(Exception):
 
     def __init__(self, message: str, field: str | None = None):
         self.message = message
-        self.field = field  # TOML path: "entries[0].source"
+        self.field = field  # YAML path: "entries[0].source"
 ```
 
 ## Sector Mapper
@@ -302,8 +303,7 @@ Total disruption time: ~5-15 seconds. ShadowMountPlus re-scans after 10s stabili
 
 ## References
 
-- TOML specification: https://toml.io/en/v1.0.0
-- exFAT directory entry format: Microsoft exFAT Revision 1.00
+- YAML specification: https://yaml.org/spec/
 - DD-02: Virtual exFAT Filesystem
 - DD-03: Config-Driven Virtual Layout
 - DD-04: Config Hot-Reload

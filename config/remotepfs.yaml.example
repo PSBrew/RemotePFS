@@ -1,0 +1,26 @@
+# RemotePFS YAML config: protocol-backed sources and virtual exFAT layout.
+# Use protocol: nfs with an NFS endpoint when NFS client support exists.
+
+global:
+  image_size_gib: 512
+  cluster_size_kib: 64
+  label: REMOTEPFS
+  oem_name: REMOTEPF
+
+sources:
+  - name: nas1
+    protocol: cifs
+    endpoint: //NAS_IP/games
+    mount_point: /mnt/nas1
+    read_only: true
+    options: ro,vers=3.1.1,cache=strict,actimeo=30,rsize=1048576
+    credentials_file: /etc/remotepfs/nas1.credentials
+
+entries:
+  - virtual_path: example-games
+    source: /mnt/nas1/example-games
+    type: directory
+
+  - virtual_path: example-game.exfat.ffpfsc
+    source: /mnt/nas1/images/example-game.exfat.ffpfsc
+    type: file

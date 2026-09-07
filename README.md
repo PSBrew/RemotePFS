@@ -13,15 +13,14 @@
 
 ## Why
 
-RemotePFS presents files from one or more NFS mounts through a virtual, read-only exFAT filesystem. An SBC serves that filesystem through a local nbdkit Python plugin, a Linux NBD block device, and a USB mass-storage gadget. No `.exfat` image, loop device, or game copy is required.
+RemotePFS presents files from one or more protocol-backed sources through a virtual, read-only exFAT filesystem. V1 supports NFS and SMB 3.1.1 through Linux's CIFS client. Future providers can reuse the same source contract. An SBC serves that filesystem through a local nbdkit Python plugin, a Linux NBD block device, and a USB mass-storage gadget. No `.exfat` image, loop device, or game copy is required.
 
 ## Features
 
-- Config-driven virtual root with files and recursively scanned directories.
-- NFS v4.1 read-only sources with hardened mount options.
+- Generic source contract with NFS and SMB 3.1.1/CIFS support.
 - Virtual exFAT metadata generated in memory.
 - nbdkit Python API v2 over a Unix socket.
-- Read-only enforcement at NFS, NBD, and USB gadget layers.
+- Read-only enforcement at source, NBD, and USB gadget layers.
 - FastAPI localhost control plane with compile/activate generations.
 - Metadata preload support through nbdsh.
 - macOS-compatible unit-test and software-development path; SBC hardware is required for USB/NBD integration.
@@ -42,10 +41,10 @@ See [SBC installation](docs/sbc-installation.md) for Debian/Ubuntu/Armbian deplo
 ## Commands
 
 ```bash
-cp config/remotepfs.conf.example /tmp/remotepfs.conf
-# Edit /tmp/remotepfs.conf with real NFS paths, then:
-remotepfs compile /tmp/remotepfs.conf
-remotepfs serve --config /etc/remotepfs/remotepfs.conf
+cp config/remotepfs.yaml.example /tmp/remotepfs.yaml
+# Edit /tmp/remotepfs.yaml with source endpoints and SBC credential paths, then:
+remotepfs compile /tmp/remotepfs.yaml
+remotepfs serve --config /etc/remotepfs/remotepfs.yaml
 curl http://127.0.0.1:8080/api/health
 ```
 

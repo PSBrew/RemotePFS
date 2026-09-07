@@ -1,28 +1,17 @@
-"""Config system: TOML parsing and validation per spec 07 (config-system) and spec 05 (security limits).
-
-Schema (spec 07):
-
-    [global]
-    image_size_gib = 512          # >= 1, <= 262144 (exFAT limit)
-    cluster_size_kib = 64         # locked to 64 (PS5 / ShadowMountPlus)
-    label = "REMOTEPFS"           # <= 11 chars, uppercase ASCII
-    oem_name = "REMOTEPFS"        # exactly 8 chars, uppercase ASCII
-
-    [[sources]]
-    name / server / export / mount_point / nfs_options
-
-    [[entries]]
-    virtual_path / source / type ("file" | "directory")
-
-Security limits (spec 05): path traversal rejection, max 10 000 entries.
-"""
+"""Config system: YAML parsing and validation per spec 07 and spec 05."""
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
+
+import yaml
+from yaml.constructor import ConstructorError
+from yaml.events import AliasEvent
+from yaml.nodes import MappingNode, Node
+
+from .consts import DEFAULT_CIFS_OPTIONS, DEFAULT_NFS_OPTIONS
 
 MAX_CONFIG_BYTES = 1_048_576  # 1 MiB body limit (spec 05)
 MAX_ENTRIES = 10_000  # spec 05 hard limit
@@ -35,7 +24,7 @@ FORBIDDEN_PATTERNS = ("..", "./", "~")
 
 
 class ConfigError(Exception):
-    """Config validation error with an optional TOML field path."""
+    """Config validation error with an optional YAML field path."""
 
     def __init__(self, message: str, field: str | None = None) -> None:
         super().__init__(message)
@@ -43,15 +32,42 @@ class ConfigError(Exception):
         self.field = field
 
 
+class _StrictLoader(yaml.SafeLoader):
+    """Safe YAML loader that rejects aliases and duplicate mapping keys."""
+
+    def compose_node(self, parent: Any, index: Any) -> Node:
+        """Reject aliases before PyYAML expands referenced nodes."""
+        if self.check_event(AliasEvent):
+            event = self.peek_event()
+            raise ConstructorError(None, None, "YAML aliases are not supported", event.start_mark)
+        return super().compose_node(parent, index)
+
+
+def _construct_mapping(loader: yaml.Loader, node: MappingNode, deep: bool = False) -> dict[object, object]:
+    """Construct a mapping while rejecting duplicate keys."""
+    mapping: dict[object, object] = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node, deep=deep)
+        if key in mapping:
+            raise ConstructorError(None, None, f"duplicate YAML key: {key!r}", key_node.start_mark)
+        mapping[key] = loader.construct_object(value_node, deep=deep)
+    return mapping
+
+
+_StrictLoader.add_constructor(yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping)
+
+
 @dataclass(frozen=True)
 class SourceConfig:
-    """One NFS mount source."""
+    """One protocol-backed source."""
 
     name: str
-    server: str
-    export: str
+    protocol: str
+    endpoint: str
     mount_point: str
-    nfs_options: str = ""
+    read_only: bool = True
+    options: str = ""
+    credentials_file: str | None = None
 
 
 @dataclass(frozen=True)
@@ -128,34 +144,71 @@ def _validate_global(raw: dict[str, object]) -> tuple[int, int, str, str]:
 
 
 def _validate_sources(raw: list[object]) -> list[SourceConfig]:
-    """Validate [[sources]] array; names must be unique."""
+    """Validate registered protocol sources; names must be unique."""
     if not raw:
         raise ConfigError("at least one [[sources]] entry is required", field="sources")
     sources: list[SourceConfig] = []
     names: set[str] = set()
     for i, item in enumerate(raw):
+        field = f"sources[{i}]"
         if not isinstance(item, dict):
-            raise ConfigError(f"sources[{i}]: must be a table", field=f"sources[{i}]")
-        name = _validate_str(item.get("name"), f"sources[{i}].name")
+            raise ConfigError(f"{field}: must be a table", field=field)
+        name = _validate_str(item.get("name"), f"{field}.name")
         if name in names:
-            raise ConfigError(f"sources[{i}].name: duplicate source name '{name}'", field=f"sources[{i}].name")
+            raise ConfigError(f"{field}.name: duplicate source name '{name}'", field=f"{field}.name")
         names.add(name)
-        server = _validate_str(item.get("server"), f"sources[{i}].server")
-        export = _validate_str(item.get("export"), f"sources[{i}].export")
-        mount_point = _validate_str(item.get("mount_point"), f"sources[{i}].mount_point")
+        protocol = item.get("protocol", "nfs")
+        if (
+            not isinstance(protocol, str)
+            or not protocol
+            or not protocol.replace("+", "").replace("-", "").replace(".", "").isalnum()
+        ):
+            raise ConfigError(f"{field}.protocol: must be a protocol identifier", field=f"{field}.protocol")
+        endpoint = _validate_str(item.get("endpoint"), f"{field}.endpoint")
+        if protocol == "nfs" and ":" not in endpoint:
+            raise ConfigError(f"{field}.endpoint: NFS endpoint must be server:/export", field=f"{field}.endpoint")
+        if protocol == "cifs" and not endpoint.startswith("//"):
+            raise ConfigError(f"{field}.endpoint: CIFS endpoint must be //server/share", field=f"{field}.endpoint")
+        mount_point = _validate_str(item.get("mount_point"), f"{field}.mount_point")
         if not mount_point.startswith("/"):
-            raise ConfigError(f"sources[{i}].mount_point: must be absolute", field=f"sources[{i}].mount_point")
-        _validate_no_traversal(mount_point, f"sources[{i}].mount_point")
-        nfs_options = item.get("nfs_options", "")
-        if not isinstance(nfs_options, str):
-            raise ConfigError(f"sources[{i}].nfs_options: must be a string", field=f"sources[{i}].nfs_options")
+            raise ConfigError(f"{field}.mount_point: must be absolute", field=f"{field}.mount_point")
+        _validate_no_traversal(mount_point, f"{field}.mount_point")
+        read_only = item.get("read_only", True)
+        if read_only is not True:
+            raise ConfigError(f"{field}.read_only: must remain true", field=f"{field}.read_only")
+        if "options" not in item:
+            options = DEFAULT_NFS_OPTIONS if protocol == "nfs" else DEFAULT_CIFS_OPTIONS if protocol == "cifs" else ""
+        else:
+            options = item["options"]
+        if not isinstance(options, str):
+            raise ConfigError(f"{field}.options: must be a string", field=f"{field}.options")
+        credentials_file = item.get("credentials_file")
+        if credentials_file is not None:
+            if not isinstance(credentials_file, str) or not credentials_file:
+                raise ConfigError(f"{field}.credentials_file: must be a string", field=f"{field}.credentials_file")
+            if not credentials_file.startswith("/"):
+                raise ConfigError(f"{field}.credentials_file: must be absolute", field=f"{field}.credentials_file")
+            _validate_no_traversal(credentials_file, f"{field}.credentials_file")
+        if protocol == "cifs" and not credentials_file:
+            raise ConfigError(
+                f"{field}.credentials_file: required for cifs sources", field=f"{field}.credentials_file"
+            )
+        if protocol in {"nfs", "cifs"}:
+            option_tokens = {token.strip() for token in options.split(",")}
+            if "ro" not in option_tokens or "rw" in option_tokens:
+                raise ConfigError(
+                    f"{field}.options: must contain standalone 'ro' and must not contain 'rw'",
+                    field=f"{field}.options",
+                )
         sources.append(
             SourceConfig(
                 name=name,
-                server=server,
-                export=export,
+                protocol=protocol,
+                endpoint=endpoint,
                 mount_point=mount_point,
-                nfs_options=nfs_options,
+                read_only=read_only,
+                options=options,
+                credentials_file=credentials_file,
             )
         )
     return sources
@@ -208,34 +261,23 @@ def _validate_entries(raw: list[object], mount_points: list[str]) -> list[EntryC
 
 
 def validate(raw: dict[str, object]) -> Config:
-    """Validate a config dict (from TOML or JSON) and return a Config.
-
-    Args:
-        raw: Parsed TOML/JSON config dict with ``global``, ``sources`` and
-            ``entries`` keys.
-
-    Returns:
-        Validated Config object.
-
-    Raises:
-        ConfigError: On the first validation failure, with a field path.
-    """
+    """Validate parsed YAML data and return a Config."""
     if not isinstance(raw, dict):
-        raise ConfigError("config must be a TOML table", field="<root>")
+        raise ConfigError("config must be a YAML mapping", field="<root>")
 
     g = raw.get("global")
     if not isinstance(g, dict):
-        raise ConfigError("[global] section is required", field="global")
+        raise ConfigError("global section is required", field="global")
     image_size_gib, cluster_size_kib, label, oem_name = _validate_global(g)
 
     sources_raw = raw.get("sources")
     if not isinstance(sources_raw, list):
-        raise ConfigError("[[sources]] array is required", field="sources")
+        raise ConfigError("sources sequence is required", field="sources")
     sources = _validate_sources(sources_raw)
 
     entries_raw = raw.get("entries")
     if not isinstance(entries_raw, list):
-        raise ConfigError("[[entries]] array is required", field="entries")
+        raise ConfigError("entries sequence is required", field="entries")
     entries = _validate_entries(entries_raw, sorted((s.mount_point for s in sources), key=len, reverse=True))
     return Config(
         image_size_gib=image_size_gib,
@@ -248,38 +290,20 @@ def validate(raw: dict[str, object]) -> Config:
 
 
 def parse(text: str) -> Config:
-    """Parse and validate a TOML config string.
-
-    Args:
-        text: TOML config contents.
-
-    Returns:
-        Validated Config object.
-
-    Raises:
-        ConfigError: On TOML syntax errors or validation failures.
-    """
+    """Parse and validate a YAML config string."""
     if len(text.encode("utf-8")) > MAX_CONFIG_BYTES:
         raise ConfigError(f"config exceeds 1 MiB ({MAX_CONFIG_BYTES} bytes)", field="<body>")
     try:
-        raw = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
-        raise ConfigError(f"TOML parse error: {exc}") from exc
+        raw = yaml.load(text, Loader=_StrictLoader)
+    except RecursionError as exc:
+        raise ConfigError("YAML nesting exceeds parser limits") from exc
+    except yaml.YAMLError as exc:
+        raise ConfigError(f"YAML parse error: {exc}") from exc
     return validate(raw)
 
 
 def load(path: str) -> Config:
-    """Load, parse, and validate a config file from disk.
-
-    Args:
-        path: Path to the TOML config file (default /etc/remotepfs/remotepfs.conf).
-
-    Returns:
-        Validated Config object.
-
-    Raises:
-        ConfigError: On unreadable file, TOML errors, or validation failures.
-    """
+    """Load, parse, and validate a YAML config file from disk."""
     try:
         text = Path(path).read_text(encoding="utf-8")
     except OSError as exc:

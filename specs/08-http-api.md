@@ -39,18 +39,18 @@ Returns current service state.
     "bytes_served": 827364829172,
     "read_errors": 0
   },
-  "nfs_mounts": [
+  "mounts": [
     {
       "name": "nas1",
-      "server": "192.168.1.100",
-      "export": "/volume1/games",
+      "protocol": "cifs",
+      "endpoint": "//192.168.1.100/games",
       "mount_point": "/mnt/nas1",
       "mounted": true,
       "state": "ok"
     }
   ],
   "config": {
-    "path": "/etc/remotepfs/remotepfs.conf",
+    "path": "/etc/remotepfs/remotepfs.yaml",
     "last_loaded": "2026-09-05T10:30:00Z",
     "generation": 3,
     "game_count": 15,
@@ -115,19 +115,25 @@ Response:
 
 ### PUT /api/config
 
-Replace the entire configuration. Body is TOML (Content-Type: `application/toml`) or JSON (Content-Type: `application/json`).
+Replace entire configuration. Body is YAML (Content-Type: `application/yaml`) or JSON (Content-Type: `application/json`).
 
 **Request:**
 ```
 PUT /api/config
-Content-Type: application/toml
+Content-Type: application/yaml
 
-[global]
-image_size_gib = 2048
-...
-
-[[sources]]
-...
+global:
+  image_size_gib: 2048
+  cluster_size_kib: 64
+  label: REMOTEPFS
+  oem_name: REMOTEPF
+sources:
+  - name: nas1
+    protocol: cifs
+    endpoint: //NAS_IP/games
+    mount_point: /mnt/nas1
+    options: ro,vers=3.1.1
+    credentials_file: /etc/remotepfs/nas1.credentials
 ```
 
 **Response 200:**
@@ -225,7 +231,7 @@ All errors follow a consistent format:
 |-------------|------|---------|
 | 400 | `BAD_REQUEST` | Malformed request body |
 | 413 | `PAYLOAD_TOO_LARGE` | Config >1 MiB |
-| 415 | `UNSUPPORTED_MEDIA_TYPE` | Not TOML or JSON |
+| 415 | `UNSUPPORTED_MEDIA_TYPE` | Not YAML or JSON |
 | 422 | `CONFIG_INVALID` | Config validation failed |
 | 423 | `RELOAD_IN_PROGRESS` | Another reload already running |
 | 500 | `INTERNAL_ERROR` | Unexpected server error |
@@ -355,7 +361,7 @@ class StatusResponse(BaseModel):
     service: ServiceInfo
     gadget: GadgetInfo
     nbd: NbdInfo
-    nfs_mounts: list[NfsMountInfo]
+    mounts: list[MountInfo]
     config: ConfigInfo
     system: SystemInfo
 
@@ -384,10 +390,10 @@ class NbdInfo(BaseModel):
     read_errors: int
 
 
-class NfsMountInfo(BaseModel):
+class MountInfo(BaseModel):
     name: str
-    server: str
-    export: str
+    protocol: str
+    endpoint: str
     mount_point: str
     mounted: bool
     state: str
@@ -494,7 +500,7 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.put("/api/config", response_model=ConfigReplaceResponse)
     async def put_config(request: Request) -> ConfigReplaceResponse:
-        """Replace entire configuration. Body is TOML or JSON."""
+        """Replace entire configuration. Body is YAML or JSON."""
         content_type = request.headers.get("content-type", "")
         body = await request.body()
         if len(body) > 1_048_576:
@@ -502,16 +508,14 @@ def _register_routes(app: FastAPI) -> None:
                 status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
                 detail={"code": "PAYLOAD_TOO_LARGE", "message": "Config body exceeds 1 MiB limit"},
             )
-        if "toml" in content_type:
-            config_text = body.decode("utf-8")
-        elif "json" in content_type:
+        if "yaml" in content_type or "yml" in content_type or "json" in content_type:
             config_text = body.decode("utf-8")
         else:
             raise HTTPException(
                 status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
                 detail={
                     "code": "UNSUPPORTED_MEDIA_TYPE",
-                    "message": "Content-Type must be application/toml or application/json",
+                    "message": "Content-Type must be application/yaml or application/json",
                 },
             )
         try:
@@ -569,7 +573,7 @@ def run_api(service: "RemotePfsService", host: str = "127.0.0.1", port: int = 80
 ### Concurrency Model
 
 - FastAPI handlers are `async def` — run on the event loop, non-blocking.
-- `run_in_threadpool()` bridges to sync code (TOML parsing, generation build,
+- `run_in_threadpool()` bridges to sync code (YAML parsing, generation build,
   nbdkit process management) without blocking the event loop.
 - Long-running reload sequence (UDC unbind + nbdkit restart + NBD reconnect +
   warm + UDC rebind) runs in thread pool; `POST /api/config/reload` awaits it.
@@ -591,4 +595,4 @@ def run_api(service: "RemotePfsService", host: str = "127.0.0.1", port: int = 80
 - FastAPI: https://fastapi.tiangolo.com/
 - Pydantic v2: https://docs.pydantic.dev/latest/
 - uvicorn: https://www.uvicorn.org/
-- TOML specification: https://toml.io/en/v1.0.0
+- YAML specification: https://yaml.org/spec/

@@ -18,7 +18,7 @@ This roadmap implements the architecture defined in:
 | 04   | Caching Layer                              | Two-tier: nbdkit cache + Linux page cache        |
 | 05   | Security Model                             | Host OS hardening, socket permissions, read-only |
 | 06   | NBD Server (nbdkit Python Plugin)          | Python plugin, filter chain, bring-up script     |
-| 07   | Config System                              | TOML schema, validation, mount mapping           |
+| 07   | Config System                              | YAML schema, validation, generic protocol source mapping |
 | 08   | HTTP API                                   | Two-phase compile/activate; PUT/reload wrappers; status/games/health/eject  |
 
 Design decisions document at `plans/02-design-decisions.md`.
@@ -36,7 +36,7 @@ Design decisions document at `plans/02-design-decisions.md`.
 1. Install system packages:
    - `nbdkit`, `nbdkit-plugin-python3`, `nbd-client`
    - `nfs-common` (NFS client)
-   - `python3` (≥3.11), `python3-tomli` (or stdlib `tomllib`)
+   - `python3-yaml` (PyYAML), Python 3.11+
    - `python3-fastapi` (HTTP API), `python3-uvicorn` (ASGI server), `python3-pydantic` (models)
 
 2. Verify kernel modules available:
@@ -65,21 +65,21 @@ Design decisions document at `plans/02-design-decisions.md`.
 
 ### Phase 2 — Config System & Virtual exFAT Builder
 
-**Goal:** Parse TOML config, validate, compile into virtual exFAT metadata structures.
+**Goal:** Parse YAML config, validate, compile into virtual exFAT metadata structures.
 
 **Spec reference:** [07 — Config System](../specs/07-config-system.md), [06 — NBD Server](../specs/06-nbd-server.md).
 
-**Tasks:**
+**Acceptance criteria:**
 
-1. **TOML config schema** (`/etc/remotepfs/remotepfs.conf`):
-   - `[global]`: image_size_gib, cluster_size_kib (locked 64), label (uppercase, 11 chars), oem_name
-   - `[[sources]]`: name, server, export, mount_point, nfs_options
-   - `[[entries]]`: virtual_path (flat, no `/`), source (under mount_point), type ("file"|"directory")
+1. **YAML config schema** (`/etc/remotepfs/remotepfs.yaml`):
+   - `global`: image_size_gib, cluster_size_kib (locked 64), label, oem_name
+   - `sources[]`: generic name, protocol, endpoint, mount_point, read_only, options, credentials_file
+   - `entries[]`: virtual_path (flat, no `/`), source, type (`file` or `directory`)
 
 2. **Config compiler** (`config_compiler.py`):
-   - Validate TOML syntax and field constraints
-   - Verify NFS source directories exist and are accessible
-   - Build directory tree from `[[entries]]`
+   - Validate YAML syntax and field constraints
+   - Verify configured protocol source directories exist and are accessible
+   - Build directory tree from `entries[]`
    - Verify `param.sfo` exists in each game directory (probe, not required)
    - Assign file IDs, compute cluster chains
 
@@ -100,7 +100,7 @@ Design decisions document at `plans/02-design-decisions.md`.
 
 **Memory footprint:** ~1 MB per 1000 game files for exFAT metadata. At 4 GB RAM, easily holds metadata for thousands of files.
 
-**Deliverable:** Config compiler that validates TOML and produces a ready-to-activate generation with serialized SectorMapper state.
+**Deliverable:** Config compiler that validates YAML and produces a ready-to-activate generation with serialized SectorMapper state.
 
 **Estimated effort:** 8–12 hours.
 
@@ -187,13 +187,13 @@ Design decisions document at `plans/02-design-decisions.md`.
 
    | Method | Path                    | Description                                    |
    |--------|-------------------------|------------------------------------------------|
-   | POST   | `/api/config/compile`   | Validate + compile TOML → generation ID         |
+   | POST   | `/api/config/compile`   | Validate + compile YAML → generation ID         |
    | POST   | `/api/config/activate`  | Atomic swap to new generation                   |
    | GET    | `/api/status`           | Active generation, device size, bind state, game count |
    | POST   | `/api/eject`            | Gracefully unbind UDC (PS5 sees device removal) |
 
 2. **`POST /api/config/compile`:**
-   - Accept TOML config in request body
+   - Accept YAML config in request body; JSON remains compatibility input
    - Validate + compile (Phase 2)
    - Return `{ generation_id, entry_count, size_bytes, warnings[], errors[] }`
 
@@ -331,7 +331,7 @@ Design decisions document at `plans/02-design-decisions.md`.
 
 4. **Virtual filesystem verification:**
    - All config-defined games visible in ShadowMountPlus
-   - Directory structure matches TOML config
+   - Directory structure matches YAML config
    - No stale/missing entries
 
 5. **Error handling:**
@@ -374,14 +374,14 @@ Design decisions document at `plans/02-design-decisions.md`.
    - `remotepfs serve`: Full startup with progress output
    - `remotepfs shutdown`: Graceful teardown
    - `remotepfs status`: Human-readable status
-   - `remotepfs compile <remotepfs.conf>`: Offline config validation
+   - `remotepfs compile <remotepfs.yaml>`: Offline config validation
 
 4. **README and user docs:**
    - Hardware prerequisites (SBC model, USB cable, power)
    - Installation steps
-   - TOML config reference with examples
+   - YAML config reference with examples
    - Troubleshooting guide (common errors + solutions)
-   - NAS setup guide (NFS export configuration)
+   - NAS setup guide (NFS and SMB/CIFS)
 
 5. **Security review:**
    - HTTP API bound to localhost only (no external access)
@@ -399,8 +399,8 @@ Design decisions document at `plans/02-design-decisions.md`.
 
 | Phase | Milestone                        | Dependencies | Effort   | Deliverable                                      |
 |-------|----------------------------------|-------------|----------|--------------------------------------------------|
-| 1     | Prerequisites                    | None        | 2–3 hr   | SBC ready, deps installed, NFS mounts verified   |
-| 2     | Config System & Virtual exFAT    | Phase 1     | 8–12 hr  | TOML → exFAT metadata compiler, generation mgmt  |
+| 1     | Prerequisites                    | None        | 2–3 hr   | SBC ready, deps installed, NFS/CIFS mounts verified |
+| 2     | Config System & Virtual exFAT    | Phase 1     | 8–12 hr  | YAML → exFAT metadata compiler, generation mgmt  |
 | 3     | NBD Server (nbdkit)              | Phase 2     | 6–10 hr  | /dev/nbd0 served by nbdkit + Python plugin       |
 | 4     | HTTP API                         | Phase 2     | 6–8 hr   | Config hot-reload API, status endpoint            |
 | 5     | USB Gadget Bind                  | Phase 3     | 4–6 hr   | PS5 detects virtual exFAT as USB storage         |
@@ -417,7 +417,7 @@ Design decisions document at `plans/02-design-decisions.md`.
 | Risk                                    | Likelihood | Impact | Mitigation                                                       |
 |-----------------------------------------|-----------|--------|------------------------------------------------------------------|
 | `nbd` module missing from BSP kernel    | Medium    | High   | Verify before SBC selection. Fallback: custom kernel build or module backport. |
-| Config validation failures on edge cases| Medium    | Medium | Comprehensive test suite for config compiler. Fuzz TOML inputs.  |
+| Config validation failures on edge cases| Medium    | Medium | Comprehensive test suite for config compiler. Fuzz YAML inputs.  |
 | nbdkit Python plugin performance        | Low       | Medium | Python overhead minimal (I/O bound). Profile if needed; rewrite hotspot in C plugin if critical. |
 | `dwc3` / UDC driver missing or wrong mode | Low    | High   | Verify SBC supports USB gadget mode before selection. Test with simple gadget first. |
 | PS5 SCSI command incompatibility        | Medium    | Medium | Test with `stall=1`. Unknown commands cause stall, not crash. Monitor dmesg during testing. |
@@ -440,7 +440,7 @@ Design decisions document at `plans/02-design-decisions.md`.
 | Metadata preloader                 | 6     | Python (integrated in startup sequence)               |
 | CLI entry point                    | 8     | Python (`/usr/bin/remotepfs`)                         |
 | End-to-end test report             | 7     | Markdown in `reports/e2e-test-YYYY-MM-DD.md`          |
-| User documentation                 | 8     | README.md, TOML config reference                      |
+| User documentation                 | 8     | README.md, YAML config reference                |
 | Performance baseline report        | 7     | Markdown in `reports/perf-baseline.md`                |
 
 ---
@@ -451,8 +451,8 @@ Full startup sequence from cold boot to PS5 recognition (ref: spec 06):
 
 ```
 1.  modprobe nbd g_mass_storage
-2.  Mount NFS exports (fstab or manual)
-3.  Load config from /etc/remotepfs/remotepfs.conf
+2.  Mount configured NFS or CIFS sources (fstab or manual)
+3. Load config from /etc/remotepfs/remotepfs.yaml
 4.  Compile config → SectorMapper (build exFAT metadata in memory)
 5.  Start nbdkit:
       nbdkit \
@@ -483,7 +483,7 @@ Full startup sequence from cold boot to PS5 recognition (ref: spec 06):
 Config reload (hot-swap):
 
 ```
-1. POST /api/config/compile (new TOML) → generation ID
+1. POST `/api/config/compile` (new YAML) → generation ID
 2. POST /api/config/activate { generation_id }
    a. Unbind UDC
    b. Disconnect NBD

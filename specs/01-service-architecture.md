@@ -56,8 +56,8 @@
                             ▼
 ┌──────────────────────────────────────────────────────────────────────┐
 │                     SectorMapper                                      │
-│  Virtual exFAT block device built from TOML config.                  │
-│  Maps LBA ranges → (NFS fd, file_offset) tuples.                    │
+│  Virtual exFAT block device built from YAML config.                  │
+│  Maps LBA ranges → (protocol source, file_offset) tuples.            │
 │                                                                      │
 │  Sectors:                                                            │
 │    Region 0     [    0 –   511]: MBR + GPT (partition table stub)    │
@@ -71,30 +71,13 @@
 │  stored in memory. ExFAT structures (VBR, FAT, bitmap, root dir,     │
 │  upcase table) computed from config tree.                            │
 └───────────────────────────┬──────────────────────────────────────────┘
-                            │ os.pread(NFS fd, file_offset)
+                            │ os.pread(source fd, file_offset)
                             ▼
 ┌──────────────────────────────────────────────────────────────────────┐
-│              NFS File Access Layer                                    │
-│  Open file descriptors to NFS mounts (one per NFS server).           │
-│  Linux kernel NFS client (in-kernel, no userspace daemon).           │
-│  Mount options: ro,hard,nconnect=2,rsize=1048576,noatime,nosuid,    │
-│  nodev,noexec. NFS v4.1 over TCP.                                    │
-│                                                                      │
-│  Two-tier caching:                                                    │
-│    Tier 1 — nbdkit cache filter (temp-file cache; LRU).               │
-│    Tier 2 — Linux page cache (automatic, NFS files).                 │
-│                                                                      │
-│  Metadata preloading (V1): Before UDC bind, warm nbdkit cache by     │
-│  issuing pread() for all exFAT metadata sectors + root dir entries.  │
-│  This ensures PS5's initial partition scan hits nbdkit cache, not    │
-│  NFS.                                                                 │
-└───────────────────────────┬──────────────────────────────────────────┘
-                            │ NFS v4.1 (TCP 2049)
-                            ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│              NAS (Synology / NFS server)                              │
-│  Game files stored on NAS filesystem. Read-only NFS export.          │
-│  2× bonded 1 GbE, jumbo frames (MTU 9000).                           │
+│              Protocol Source Access Layer                             │
+│  Open file descriptors to mounted protocol sources.                  │
+│  V1: Linux NFS client or CIFS client mounting SMB 3.1.1.             │
+│  Read-only options and source-specific page cache remain active.     │
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -104,34 +87,28 @@
 
 ### 2.1 Config System
 
-Manages the virtual filesystem layout. Single TOML config file maps virtual
-paths to NFS source paths. Supports multiple NFS servers.
+Manages virtual filesystem layout. Single YAML config maps virtual paths
+to protocol-backed source paths. V1 supports multiple NFS and SMB sources;
+future providers can reuse the source contract.
 
-```toml
-# /etc/remotepfs/remotepfs.conf
-
-[global]
-image_size_gib = 2048
-cluster_size_kib = 64                     # Locked to 64 (PS5 requirement)
-label = "REMOTEPFS"
-oem_name = "REMOTEPFS"
-
-[[sources]]
-name = "nas1"
-server = "192.168.1.100"
-export = "/volume1/games"
-mount_point = "/mnt/nas1"
-nfs_options = "nfsvers=4.1,nconnect=2,rsize=1048576,wsize=1048576,hard,noatime,nosuid,nodev,noexec"
-
-[[entries]]
-virtual_path = "Elden Ring"
-source = "/mnt/nas1/elden-ring/"
-type = "directory"
-
-[[entries]]
-virtual_path = "God of War Ragnarok"
-source = "/mnt/nas1/gow-ragnarok/"
-type = "directory"
+```yaml
+global:
+  image_size_gib: 2048
+  cluster_size_kib: 64
+  label: REMOTEPFS
+  oem_name: REMOTEPF
+sources:
+  - name: nas1
+    protocol: cifs
+    endpoint: //192.168.1.100/games
+    mount_point: /mnt/nas1
+    read_only: true
+    options: ro,vers=3.1.1,cache=strict,actimeo=30,rsize=1048576
+    credentials_file: /etc/remotepfs/nas1.credentials
+entries:
+  - virtual_path: Elden Ring
+    source: /mnt/nas1/elden-ring/
+    type: directory
 ```
 
 **Two-phase deployment model (V1):**
@@ -149,20 +126,18 @@ validation rules are in [spec 07 — Config System](07-config-system.md).
 
 ### 2.2 Virtual exFAT Builder (SectorMapper)
 
-Builds a virtual exFAT filesystem from the compiled TOML config. No `.exfat`
-file is ever created — the entire filesystem exists as in-memory metadata +
-NFS file mappings.
+Builds a virtual exFAT filesystem from compiled YAML config. No `.exfat`
+file is ever created; filesystem exists as in-memory metadata plus
+protocol source mappings.
 
 **Responsibilities:**
 
 - Compute exFAT structures: VBR, FAT (allocation table), allocation bitmap,
   root directory, upcase table.
 - Assign cluster chains for each config-defined file/directory.
-- Build a sector address map: `[LBA → (NFS fd, file_offset, byte_count)]`.
-- Provide `pread()` entry point that resolves any LBA to the correct backing
-  store (MBR/GPT stub, exFAT metadata buffer, or NFS file).
-- Provide `extents()` for hole/sparse mapping (allows nbdkit to advertise
-  `NBDKIT_EXTENT_ZERO` for unpopulated regions).
+- Build a sector address map: `[LBA → (source fd, file_offset, byte_count)]`.
+- Provide `pread()` entry point that resolves any LBA to metadata or source data.
+- Provide `extents()` for hole/sparse mapping and `NBDKIT_EXTENT_ZERO`.
 
 **Memory footprint:** ExFAT metadata is proportional to number of files.
 Rough estimate: ~1 MB per 1000 game files. At 4 GB RAM, easily holds
@@ -239,7 +214,7 @@ REST API on `localhost:8080` for config management and status monitoring.
 
 | Method | Path                    | Description                                    |
 |--------|-------------------------|------------------------------------------------|
-| POST   | `/api/config/compile`   | Validate + compile TOML config → generation ID  |
+| POST   | `/api/config/compile`   | Validate + compile YAML config → generation ID  |
 | POST   | `/api/config/activate`  | Atomically swap active generation               |
 | GET    | `/api/status`           | Current state (bound/unbound, game count, etc.) |
 | POST   | `/api/eject`            | Gracefully unbind UDC (PS5 eject simulation)    |
@@ -297,7 +272,7 @@ plugin.pread() → SectorMapper.resolve(offset)
 SectorMapper looks up LBA range:
   ├─ Region 0 (MBR/GPT): return pre-built buffer ↔ 512 bytes
   ├─ Region 1 (exFAT metadata): return pre-built buffer ↔ ~32 MB
-  ├─ Region 2 (file data): (NFS fd, file_offset) → os.pread(fd, count, file_offset)
+  ├─ Region 2 (file data): (source fd, file_offset) → os.pread(fd, count, file_offset)
   └─ Hole (unmapped): return zeroes + mark extent as NBDKIT_EXTENT_ZERO
   │
   ▼
@@ -314,10 +289,10 @@ Data flows back up: NFS → page cache → SectorMapper → plugin → cache fil
 ### 3.2 Config Reload (game switch)
 
 ```
-1. User edits /etc/remotepfs/remotepfs.conf (add/remove games)
-2. POST /api/config/compile
-   ├─ Validate TOML syntax + field constraints
-   ├─ Verify NFS mounts accessible, source files exist
+1. User edits `/etc/remotepfs/remotepfs.yaml` (add/remove sources or entries)
+2. POST `/api/config/compile`
+   ├─ Validate YAML syntax + field constraints
+   ├─ Verify mounted protocol sources and source files
    ├─ Build virtual exFAT metadata (FAT, bitmap, directories)
    ├─ Compute total size, assign cluster chains
    ├─ Return generation ID (UUID) + validation report
@@ -386,7 +361,7 @@ Modules **not** required (removed from V0 design):
 | `nbd-client`              | Kernel NBD client connector               |
 | `nfs-common`              | NFS client utilities (mount.nfs)          |
 | `python3` (≥3.11)        | Application runtime                       |
-| `python3-tomli`           | TOML parsing (stdlib `tomllib` in ≥3.11)  |
+| `python3-yaml` (≥6.0)       | YAML parsing                            |
 | `python3-fastapi`           | HTTP API framework (FastAPI + Pydantic)    |
 | `python3-uvicorn`           | ASGI server for FastAPI                    |
 
@@ -402,12 +377,12 @@ Modules **not** required (removed from V0 design):
 
 ```
 /etc/remotepfs/
-  remotepfs.conf           # Active config (symlink or direct file)
+  remotepfs.yaml             # Active config (symlink or direct file)
 
 /var/lib/remotepfs/
   generations/
     <uuid>/                # Compiled generation
-      remotepfs.conf        # Normalized config copy
+      remotepfs.yaml         # Normalized config copy
       sector_map.pickle     # Serialized SectorMapper state
       metadata.bin          # Pre-built exFAT metadata (Regions 0–1)
       validation.json       # Compile validation report
@@ -420,8 +395,8 @@ Modules **not** required (removed from V0 design):
 /usr/lib/remotepfs/
   remotepfs_nbd.py          # nbdkit Python plugin
   sector_mapper.py          # Virtual exFAT SectorMapper
-  config_compiler.py        # TOML → exFAT metadata compiler
-  nfs_layer.py              # NFS file access abstraction
+  config_compiler.py        # YAML → exFAT metadata compiler
+  source_layer.py            # Protocol source access abstraction
   gadget_manager.py         # USB gadget ConfigFS interface
   api_server.py             # HTTP API server
 
@@ -438,10 +413,9 @@ Modules **not** required (removed from V0 design):
 
 ```
 1. systemd starts remotepfs.service
-2. Load config from /etc/remotepfs/remotepfs.conf
-3. Mount NFS exports (if not already mounted via fstab):
-     mount -t nfs4 -o rsize=1048576,hard,intr,tcp,noac \
-       192.168.1.100:/volume1/games /mnt/nfs/synology
+2. Load YAML config from `/etc/remotepfs/remotepfs.yaml`
+3. Mount configured NFS or CIFS sources if not already mounted:
+     mount -t cifs -o ro,vers=3.1.1,cache=strict,actimeo=30,rsize=1048576,credentials=/etc/remotepfs/nas1.credentials //192.168.1.100/games /mnt/nas1
 4. Compile config → SectorMapper (build exFAT metadata in memory)
 5. Start nbdkit with cache + blocksize filters + python plugin
 6. Connect NBD client:
