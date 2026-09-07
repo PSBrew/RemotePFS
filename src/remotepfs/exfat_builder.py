@@ -13,8 +13,11 @@ import uuid
 import zlib
 from collections.abc import Iterable
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from .config import Config
+if TYPE_CHECKING:
+    from .config import Config
+
 from .consts import (
     BOOT_REGION_SECTORS,
     BOOT_REGION_TOTAL_SECTORS,
@@ -566,6 +569,8 @@ def scan_directory(source_path: str, virtual_parent: str = "") -> list[VirtualEn
     This helper does not allocate clusters; use :func:`build_exfat` for a complete
     filesystem. Missing or unreadable directories produce an empty list.
     """
+
+    from .config import Config
 
     config = Config(1, 64, "REMOTEPFS", "REMOTEPF", entries=[])
     builder = ExfatBuilder(config)

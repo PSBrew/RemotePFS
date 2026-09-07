@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from remotepfs.config import parse
-from remotepfs.exfat_builder import build_exfat
+from remotepfs.exfat_builder import build_exfat, scan_directory
 from remotepfs.sector_mapper import SectorMapper
 
 
@@ -68,3 +68,21 @@ def test_mapper_state_round_trip(tmp_path) -> None:
     finally:
         mapper.close()
         restored.close()
+
+
+def test_scan_directory_returns_sorted_recursive_entries(tmp_path) -> None:
+    """Scan directory helper returns stable recursive entries."""
+    (tmp_path / "z.txt").write_bytes(b"z")
+    (tmp_path / "a.txt").write_bytes(b"aa")
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (nested / "b.txt").write_bytes(b"bbb")
+
+    entries = scan_directory(str(tmp_path), virtual_parent="games")
+
+    assert [(entry.virtual_path, entry.is_directory, entry.size_bytes) for entry in entries] == [
+        ("games/a.txt", False, 2),
+        ("games/nested", True, 0),
+        ("games/nested/b.txt", False, 3),
+        ("games/z.txt", False, 1),
+    ]

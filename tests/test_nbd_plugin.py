@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 import pickle
+from pathlib import Path
 
 from remotepfs import remotepfs_nbd
 from remotepfs.config import parse
@@ -69,3 +71,11 @@ def test_plugin_extents_reports_zero_holes(tmp_path) -> None:
     assert extents
     assert extents[0][2] == 0
     mapper.close()
+
+
+def test_plugin_import_chain_is_python39_parseable() -> None:
+    """Keep files imported by Debian Bullseye nbdkit Python 3.9-compatible."""
+    package_dir = Path(__file__).parents[1] / "src" / "remotepfs"
+    for module_name in ("remotepfs_nbd.py", "sector_mapper.py", "exfat_builder.py", "consts.py"):
+        module_path = package_dir / module_name
+        ast.parse(module_path.read_text(), filename=str(module_path), feature_version=(3, 9))

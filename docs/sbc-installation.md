@@ -5,30 +5,67 @@ Hardware validation requires Linux SBC with USB gadget mode. macOS cannot valida
 ## Requirements
 
 - Linux SBC with USB 3 OTG/device port and UDC support.
-- Debian/Ubuntu/Armbian, Python 3.11+, and 4 GiB RAM recommended.
-- `nbd`, `nfs`, `nfsv4`, `libcomposite`, and `usb_f_mass_storage` kernel modules.
+- Debian/Ubuntu/Armbian. RemotePFS requires Python 3.11+ for its service.
+- At least 4 GiB RAM recommended. Systems with approximately 4 GiB RAM and adequate free storage are suitable for initial validation.
+- `nbd`, `libcomposite`, and USB mass-storage ConfigFS kernel support.
 - NAS exporting game files through NFS v4.1.
 - USB-C data cable and stable external SBC power.
 
-## Install packages
+Debian 11 ships Python 3.9. Use `uv` to install and select Python 3.11; installing Debian's `python3` package alone is not sufficient.
+
+Before installing, verify kernel and board support:
 
 ```bash
-sudo apt install nbdkit nbdkit-plugin-python3 nbd-client nfs-common \
-  python3 python3-venv curl ca-certificates
+ls /sys/class/udc
+mountpoint /sys/kernel/config
+sudo modprobe nbd
+sudo modprobe libcomposite
+sudo modprobe usb_f_mass_storage
+lsmod | grep -E '^(nbd|libcomposite|usb_f_mass_storage)\b'
+```
+
+If `/boot/config-$(uname -r)` does not exist, inspect `/proc/config.gz` when available:
+
+```bash
+grep -E '^CONFIG_(BLK_DEV_NBD|USB_LIBCOMPOSITE|USB_CONFIGFS|USB_CONFIGFS_F_MASS_STORAGE)=' \
+  "/boot/config-$(uname -r)" 2>/dev/null \
+  || zcat /proc/config.gz 2>/dev/null | \
+     grep -E '^CONFIG_(BLK_DEV_NBD|USB_LIBCOMPOSITE|USB_CONFIGFS|USB_CONFIGFS_F_MASS_STORAGE)='
+```
+
+## Install packages
+
+Debian Bullseye package name is `nbdkit-plugin-python`, not `nbdkit-plugin-python3`.
+
+Important: Debian's nbdkit Python plugin runs with its system Python interpreter, not the RemotePFS `.venv`. The tested Radxa Cubie A7S image reports `python_version=3.9.2` from `nbdkit --dump-plugin python`; installing Python 3.11 with `uv` does not change the nbdkit plugin interpreter. The nbdkit import path must remain Python 3.9-compatible. RemotePFS keeps TOML parsing in the service process and does not import `tomllib` from the plugin path. Tests enforce Python 3.9 parsing for the plugin import chain.
+
+```bash
+sudo apt update
+sudo apt install -y git nbdkit nbdkit-plugin-python nbd-client nfs-common \
+  kmod curl ca-certificates
 curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
 sudo install -m 0755 "$HOME/.local/bin/uv" /usr/local/bin/uv
+sudo /usr/local/bin/uv python install 3.11
 uv --version
 nbdkit --dump-plugin python
 nbdkit --version
 ```
 
-Install RemotePFS with `uv` in its deployment environment:
+Obtain source on the SBC before deployment. Set `REPOSITORY_URL` to the repository URL and configure Git authentication first when the repository is private. Alternatively, copy the source tree to `/tmp/remotepfs-src` using any secure transfer method.
 
 ```bash
-sudo mkdir -p /opt/remotepfs /etc/remotepfs /var/lib/remotepfs
-sudo cp -a . /opt/remotepfs/source
+REPOSITORY_URL="<repository-url>"
+git clone --depth 1 "$REPOSITORY_URL" /tmp/remotepfs-src
+```
+
+Copy source into the deployment path:
+
+```bash
+sudo mkdir -p /opt/remotepfs /etc/remotepfs /var/lib/remotepfs /opt/remotepfs/source
+sudo cp -a /tmp/remotepfs-src/. /opt/remotepfs/source/
 cd /opt/remotepfs/source
-sudo uv sync --frozen
+sudo uv sync --frozen --python 3.11
 sudo cp config/remotepfs.conf.example /etc/remotepfs/remotepfs.conf
 sudo cp config/remotepfs.service config/remotepfs-nbdkit.service /etc/systemd/system/
 sudo chown root:remotepfs /var/lib/remotepfs
