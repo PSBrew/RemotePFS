@@ -80,6 +80,16 @@ class EntryConfig:
 
 
 @dataclass(frozen=True)
+class PrefetchConfig:
+    """Validated policy for asynchronous metadata cache warming."""
+
+    directory_metadata: bool = True
+    directory_metadata_refresh_interval_seconds: int = 300
+    fat: bool = False
+    fat_refresh_interval_seconds: int = 300
+
+
+@dataclass(frozen=True)
 class Config:
     """Validated RemotePFS configuration."""
 
@@ -90,6 +100,7 @@ class Config:
     sources: list[SourceConfig] = field(default_factory=list)
     entries: list[EntryConfig] = field(default_factory=list)
     usb_port: str = "auto"
+    prefetch: PrefetchConfig = field(default_factory=PrefetchConfig)
 
     @property
     def image_size_bytes(self) -> int:
@@ -268,6 +279,33 @@ def _validate_entries(raw: list[object], mount_points: list[str]) -> list[EntryC
     return entries
 
 
+def _validate_prefetch(raw: object) -> PrefetchConfig:
+    """Validate optional prefetch policy."""
+    if raw is None:
+        return PrefetchConfig()
+    if not isinstance(raw, dict):
+        raise ConfigError("prefetch: must be a mapping", field="prefetch")
+
+    def boolean(name: str, default: bool) -> bool:
+        value = raw.get(name, default)
+        if not isinstance(value, bool):
+            raise ConfigError(f"prefetch.{name}: must be a boolean", field=f"prefetch.{name}")
+        return value
+
+    def interval(name: str, default: int) -> int:
+        value = raw.get(name, default)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise ConfigError(f"prefetch.{name}: must be a non-negative integer", field=f"prefetch.{name}")
+        return value
+
+    return PrefetchConfig(
+        directory_metadata=boolean("directory_metadata", True),
+        directory_metadata_refresh_interval_seconds=interval("directory_metadata_refresh_interval_seconds", 300),
+        fat=boolean("fat", False),
+        fat_refresh_interval_seconds=interval("fat_refresh_interval_seconds", 300),
+    )
+
+
 def validate(raw: dict[str, object]) -> Config:
     """Validate parsed YAML data and return a Config."""
     if not isinstance(raw, dict):
@@ -287,6 +325,7 @@ def validate(raw: dict[str, object]) -> Config:
     if not isinstance(entries_raw, list):
         raise ConfigError("entries sequence is required", field="entries")
     entries = _validate_entries(entries_raw, sorted((s.mount_point for s in sources), key=len, reverse=True))
+    prefetch = _validate_prefetch(raw.get("prefetch"))
     return Config(
         image_size_gib=image_size_gib,
         cluster_size_kib=cluster_size_kib,
@@ -295,6 +334,7 @@ def validate(raw: dict[str, object]) -> Config:
         sources=sources,
         entries=entries,
         usb_port=usb_port,
+        prefetch=prefetch,
     )
 
 

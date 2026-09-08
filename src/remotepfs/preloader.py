@@ -5,6 +5,8 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Callable
 
+from .config import PrefetchConfig
+
 
 class PreloadError(RuntimeError):
     """Metadata preloading failed."""
@@ -27,6 +29,7 @@ def preload(
     mapper,
     *,
     socket_path: str = "/run/remotepfs/nbd.sock",
+    policy: PrefetchConfig | None = None,
     runner: Callable[..., subprocess.CompletedProcess] = subprocess.run,
     timeout_seconds: float = 60.0,
 ) -> int:
@@ -41,7 +44,11 @@ def preload(
     Raises:
         PreloadError: If nbdsh returns a non-zero status or times out.
     """
-    ranges = mapper.get_hot_ranges()
+    policy = policy or PrefetchConfig()
+    ranges = mapper.get_hot_ranges(
+        include_directory_metadata=policy.directory_metadata,
+        include_full_fat=policy.fat,
+    )
     try:
         result = runner(
             build_nbdsh_command(socket_path, ranges),

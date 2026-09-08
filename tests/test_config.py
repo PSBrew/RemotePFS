@@ -44,6 +44,25 @@ def test_parse_valid_config() -> None:
     assert cfg.image_size_bytes == 512 * 1024**3
 
 
+def test_prefetch_defaults_are_conservative() -> None:
+    """Enable directory metadata while leaving full FAT disabled by default."""
+    cfg = parse(VALID)
+    assert cfg.prefetch.directory_metadata is True
+    assert cfg.prefetch.fat is False
+    assert cfg.prefetch.directory_metadata_refresh_interval_seconds == 300
+    assert cfg.prefetch.fat_refresh_interval_seconds == 300
+
+
+def test_prefetch_policy_is_validated() -> None:
+    """Reject invalid prefetch types and intervals."""
+    for fragment in (
+        "prefetch:\n  fat: 1",
+        "prefetch:\n  directory_metadata_refresh_interval_seconds: -1",
+    ):
+        with pytest.raises(ConfigError, match="prefetch"):
+            parse(VALID + fragment)
+
+
 def test_nfs_options_require_standalone_read_only_flag() -> None:
     """Reject missing, writable, and substring lookalike read-only options."""
     for options in ("", "rw,hard", "xro,hard", "ro,rw"):

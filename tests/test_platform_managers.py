@@ -120,7 +120,7 @@ def test_preload_reads_all_bounded_hot_ranges() -> None:
         calls.append((command, kwargs))
         return CompletedProcess(command, 0, stdout="", stderr="")
 
-    mapper = SimpleNamespace(get_hot_ranges=lambda: [(0, 512), (65536, 1024)])
+    mapper = SimpleNamespace(get_hot_ranges=lambda **_: [(0, 512), (65536, 1024)])
     assert preload(mapper, socket_path="/tmp/nbd.sock", runner=runner) == 1536
     assert len(calls) == 1
     assert "h.pread(512, 0)" in calls[0][0][-1]

@@ -92,7 +92,7 @@ class RemotePfsService:
         temporary_state.chmod(0o640)
         os.replace(temporary_state, state_file)
         self.nbd.start(image_size=generation.config.image_size_bytes, mapper_state=state_path)
-        preloader.preload(generation.mapper, socket_path=self.nbd.socket_path)
+        preloader.preload(generation.mapper, socket_path=self.nbd.socket_path, policy=generation.config.prefetch)
         self.nbd.connect()
         self.gadget.bind(udc=generation.config.usb_port)
 
