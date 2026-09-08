@@ -38,6 +38,7 @@ def preload(
     Args:
         mapper: SectorMapper-compatible object exposing ``get_hot_ranges``.
         socket_path: nbdkit Unix socket path.
+        policy: Optional nested prefetch policy; defaults to metadata-only warming.
         runner: Injectable subprocess runner.
         timeout_seconds: Maximum duration for one nbdsh pass.
 
