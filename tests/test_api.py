@@ -17,6 +17,15 @@ class FakeService:
             "service": {"version": "0.1.0", "uptime_seconds": 1, "state": "running", "state_detail": "serving"},
             "gadget": {"udc_bound": False, "udc_name": None, "lun_file": None, "lun_ro": True, "lun_size_bytes": None},
             "nbd": {"connected": False, "socket_path": "/run/remotepfs/nbd.sock"},
+            "cache": {
+                "backend": "nbdkit-cache-filter",
+                "cache_on_read": True,
+                "max_size_bytes": 1_073_741_824,
+                "min_block_size_bytes": 262_144,
+                "prefetch_bytes_requested": 0,
+                "prefetch_passes": 0,
+                "hit_miss_statistics_available": False,
+            },
             "mounts": [],
             "config": {
                 "path": "/tmp/remotepfs.yaml",

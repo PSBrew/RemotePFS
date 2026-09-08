@@ -92,7 +92,7 @@ class PrefetchConfig:
     """Validated policy for asynchronous metadata cache warming."""
 
     directory_metadata: PrefetchCategory = field(default_factory=lambda: PrefetchCategory(enabled=True))
-    fat: PrefetchCategory = field(default_factory=lambda: PrefetchCategory(enabled=False))
+    fat: PrefetchCategory = field(default_factory=lambda: PrefetchCategory(enabled=True))
 
 
 @dataclass(frozen=True)
@@ -307,7 +307,7 @@ def _validate_prefetch(raw: object) -> PrefetchConfig:
             )
         return PrefetchCategory(enabled=enabled, refresh_interval_seconds=interval)
 
-    return PrefetchConfig(directory_metadata=category("directory_metadata", True), fat=category("fat", False))
+    return PrefetchConfig(directory_metadata=category("directory_metadata", True), fat=category("fat", True))
 
 
 def validate(raw: dict[str, object]) -> Config:

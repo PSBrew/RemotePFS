@@ -12,6 +12,14 @@ global:
   #   for udc in /sys/class/udc/*; do printf '%s: ' "$(basename "$udc")"; cat "$udc/current_speed" 2>/dev/null || echo unknown; done
   usb_port: auto
 
+prefetch:
+  directory_metadata:
+    enabled: true
+    refresh_interval_seconds: 300
+  fat:
+    enabled: true
+    refresh_interval_seconds: 300
+
 sources:
   - name: nas1
     protocol: cifs

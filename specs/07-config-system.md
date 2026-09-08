@@ -1,3 +1,23 @@
+## Prefetch policy
+
+RemotePFS prefetches filesystem metadata synchronously during activation, before NBD
+connection and USB gadget binding. This pass is not a background worker.
+
+```yaml
+prefetch:
+  directory_metadata:
+    enabled: true
+    refresh_interval_seconds: 300
+  fat:
+    enabled: true
+    refresh_interval_seconds: 300
+```
+
+Both categories default to enabled with a five-minute refresh interval reserved
+for future asynchronous refresh support. Full FAT warming uses bounded NBD reads
+and does not materialize the FAT in RAM. Current prefetch reads through the
+mapper and nbdkit cache; no parallel cache backend exists.
+
 # Spec 07 - Config System & Sector Mapper
 
 ## Overview

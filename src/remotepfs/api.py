@@ -44,6 +44,18 @@ class NbdInfo(BaseModel):
     read_errors: int = 0
 
 
+class CacheInfo(BaseModel):
+    """Read-cache configuration and prefetch counters."""
+
+    backend: str = "nbdkit-cache-filter"
+    cache_on_read: bool = True
+    max_size_bytes: int = 1_073_741_824
+    min_block_size_bytes: int = 262_144
+    prefetch_bytes_requested: int = 0
+    prefetch_passes: int = 0
+    hit_miss_statistics_available: bool = False
+
+
 class MountInfo(BaseModel):
     """Network mount status."""
 
@@ -68,7 +80,6 @@ class ConfigInfo(BaseModel):
 class SystemInfo(BaseModel):
     """Host resource summary."""
 
-    memory_used_mib: float = 0
     page_cache_mib: float = 0
     cpu_percent: float = 0
 
@@ -79,6 +90,7 @@ class StatusResponse(BaseModel):
     service: ServiceInfo
     gadget: GadgetInfo
     nbd: NbdInfo
+    cache: CacheInfo
     mounts: list[MountInfo]
     config: ConfigInfo
     system: SystemInfo

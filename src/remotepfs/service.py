@@ -57,6 +57,8 @@ class RemotePfsService:
         self.active: CompiledGeneration | None = None
         self.compiled: dict[int, CompiledGeneration] = {}
         self.next_generation = 1
+        self.prefetch_bytes_requested = 0
+        self.prefetch_passes = 0
         self.state = "starting"
         self.state_detail = "not_started"
         self._sync_reload_lock = threading.Lock()
@@ -92,7 +94,12 @@ class RemotePfsService:
         temporary_state.chmod(0o640)
         os.replace(temporary_state, state_file)
         self.nbd.start(image_size=generation.config.image_size_bytes, mapper_state=state_path)
-        preloader.preload(generation.mapper, socket_path=self.nbd.socket_path, policy=generation.config.prefetch)
+        self.prefetch_bytes_requested += preloader.preload(
+            generation.mapper,
+            socket_path=self.nbd.socket_path,
+            policy=generation.config.prefetch,
+        )
+        self.prefetch_passes += 1
         self.nbd.connect()
         self.gadget.bind(udc=generation.config.usb_port)
 
@@ -235,6 +242,15 @@ class RemotePfsService:
                 "connected": self.nbd.is_ready(),
                 "socket_path": self.nbd.socket_path,
                 "connections": 1 if self.nbd.is_ready() else 0,
+            },
+            "cache": {
+                "backend": "nbdkit-cache-filter",
+                "cache_on_read": True,
+                "max_size_bytes": 1_073_741_824,
+                "min_block_size_bytes": 262_144,
+                "prefetch_bytes_requested": self.prefetch_bytes_requested,
+                "prefetch_passes": self.prefetch_passes,
+                "hit_miss_statistics_available": False,
             },
             "mounts": [self.mounts.status(source).__dict__ for source in active.config.sources] if active else [],
             "config": {

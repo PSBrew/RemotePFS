@@ -44,11 +44,11 @@ def test_parse_valid_config() -> None:
     assert cfg.image_size_bytes == 512 * 1024**3
 
 
-def test_prefetch_defaults_are_conservative() -> None:
-    """Enable directory metadata while leaving full FAT disabled by default."""
+def test_prefetch_defaults_are_enabled() -> None:
+    """Enable directory metadata and full FAT by default."""
     cfg = parse(VALID)
     assert cfg.prefetch.directory_metadata.enabled is True
-    assert cfg.prefetch.fat.enabled is False
+    assert cfg.prefetch.fat.enabled is True
     assert cfg.prefetch.directory_metadata.refresh_interval_seconds == 300
     assert cfg.prefetch.fat.refresh_interval_seconds == 300
 
