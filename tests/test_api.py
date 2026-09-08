@@ -61,6 +61,9 @@ def test_status_shape() -> None:
     response = client.get("/api/status")
     assert response.status_code == 200
     assert response.json()["nbd"]["socket_path"] == "/run/remotepfs/nbd.sock"
+    body = response.json()
+    assert body["cache"]["backend"] == "nbdkit-cache-filter"
+    assert body["cache"]["prefetch_passes"] == 0
 
 
 def test_put_rejects_unsupported_media_type() -> None:
