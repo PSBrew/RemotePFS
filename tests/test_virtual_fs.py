@@ -8,6 +8,7 @@ import struct
 import zlib
 
 from remotepfs.config import parse
+from remotepfs.consts import PARTITION_START_LBA, SECTOR_SIZE, SECTORS_PER_CLUSTER
 from remotepfs.exfat_builder import (
     _STATX_BTIME,
     _STATX_REQUIRED,
@@ -264,6 +265,36 @@ def test_builder_uses_snapshot_birthtime_for_creation_field(monkeypatch, tmp_pat
         modified = _exfat_timestamp(modified_ns)
         assert struct.unpack_from("<HH", entry, 8) == (created[1], created[0])
         assert struct.unpack_from("<HH", entry, 12) == (modified[1], modified[0])
+    finally:
+        mapper.close()
+
+
+def test_hot_ranges_cover_directory_fat_without_prefetching_full_fat(tmp_path) -> None:
+    """Warm only FAT sectors needed for directory chains plus full bitmap."""
+    source = tmp_path / "game.bin"
+    source.write_bytes(b"payload")
+    mapper = SectorMapper.from_layout(build_exfat(parse(_config(tmp_path, source.name))))
+    try:
+        layout = mapper.layout
+        assert layout.partition_start_lba == PARTITION_START_LBA
+        fat_start = (layout.partition_start_lba + layout.fat_offset) * SECTOR_SIZE
+        fat_end = fat_start + layout.fat_length * SECTOR_SIZE
+        hot_ranges = mapper.get_hot_ranges()
+        hot_fat = [
+            (offset, length) for offset, length in hot_ranges if offset < fat_end and offset + length > fat_start
+        ]
+        bitmap_start = (
+            layout.partition_start_lba + layout.cluster_heap_offset + (layout.bitmap_cluster - 2) * SECTORS_PER_CLUSTER
+        ) * SECTOR_SIZE
+        bitmap_end = bitmap_start + layout.bitmap_length
+        hot_bitmap = [
+            (offset, length) for offset, length in hot_ranges if offset < bitmap_end and offset + length > bitmap_start
+        ]
+        assert hot_fat
+        assert hot_bitmap
+        assert sum(length for _, length in hot_fat) < layout.fat_length * SECTOR_SIZE
+        assert all(length <= 64 * 1024 for _, length in hot_ranges)
+        assert all(mapper.is_metadata_region(offset, length) for offset, length in hot_ranges)
     finally:
         mapper.close()
 

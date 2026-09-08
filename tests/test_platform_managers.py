@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from subprocess import CompletedProcess
 from types import SimpleNamespace
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 from remotepfs.gadget_manager import GadgetError, GadgetManager
 from remotepfs.mount_manager import MountError, MountManager
 from remotepfs.nbdkit_manager import NbdkitManager
-from remotepfs.preloader import build_nbdsh_command
+from remotepfs.preloader import build_nbdsh_command, preload
 
 
 def test_nbdkit_command_has_required_read_only_filter_order() -> None:
@@ -110,6 +111,20 @@ def test_preloader_command_contains_each_hot_range() -> None:
     assert command[:4] == ["nbdsh", "-u", "nbd+unix:///?socket=/run/remotepfs/nbd.sock", "-c"]
     assert "h.pread(512, 0)" in command[-1]
     assert "h.pread(1024, 4096)" in command[-1]
+
+
+def test_preload_reads_all_bounded_hot_ranges() -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def runner(command, **kwargs):
+        calls.append((command, kwargs))
+        return CompletedProcess(command, 0, stdout="", stderr="")
+
+    mapper = SimpleNamespace(get_hot_ranges=lambda: [(0, 512), (65536, 1024)])
+    assert preload(mapper, socket_path="/tmp/nbd.sock", runner=runner) == 1536
+    assert len(calls) == 1
+    assert "h.pread(512, 0)" in calls[0][0][-1]
+    assert calls[0][1]["timeout"] == 60.0
 
 
 def test_gadget_manager_auto_selects_fastest_device_udc(tmp_path) -> None:
