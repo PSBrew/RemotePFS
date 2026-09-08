@@ -299,6 +299,26 @@ def test_hot_ranges_cover_directory_fat_without_prefetching_full_fat(tmp_path) -
         mapper.close()
 
 
+def test_full_fat_prefetch_policy_covers_entire_fat(tmp_path) -> None:
+    """Full FAT policy selects every FAT sector without expanding it in memory."""
+    source = tmp_path / "game.bin"
+    source.write_bytes(b"payload")
+    mapper = SectorMapper.from_layout(build_exfat(parse(_config(tmp_path, source.name))))
+    try:
+        layout = mapper.layout
+        fat_start = (layout.partition_start_lba + layout.fat_offset) * SECTOR_SIZE
+        fat_end = fat_start + layout.fat_length * SECTOR_SIZE
+        covered = sum(
+            min(offset + length, fat_end) - max(offset, fat_start)
+            for offset, length in mapper.get_hot_ranges(include_full_fat=True)
+            if offset < fat_end and offset + length > fat_start
+        )
+        assert covered == layout.fat_length * SECTOR_SIZE
+        assert all(length <= 64 * 1024 for _, length in mapper.get_hot_ranges(include_full_fat=True))
+    finally:
+        mapper.close()
+
+
 def test_directory_checksums_and_bitmap_cover_allocated_clusters(tmp_path) -> None:
     """Generated directory sets and allocation bitmap agree with FAT layout."""
     source = tmp_path / "game.bin"

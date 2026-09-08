@@ -80,13 +80,19 @@ class EntryConfig:
 
 
 @dataclass(frozen=True)
+class PrefetchCategory:
+    """Validated settings for one prefetch category."""
+
+    enabled: bool
+    refresh_interval_seconds: int = 300
+
+
+@dataclass(frozen=True)
 class PrefetchConfig:
     """Validated policy for asynchronous metadata cache warming."""
 
-    directory_metadata: bool = True
-    directory_metadata_refresh_interval_seconds: int = 300
-    fat: bool = False
-    fat_refresh_interval_seconds: int = 300
+    directory_metadata: PrefetchCategory = field(default_factory=lambda: PrefetchCategory(enabled=True))
+    fat: PrefetchCategory = field(default_factory=lambda: PrefetchCategory(enabled=False))
 
 
 @dataclass(frozen=True)
@@ -280,30 +286,28 @@ def _validate_entries(raw: list[object], mount_points: list[str]) -> list[EntryC
 
 
 def _validate_prefetch(raw: object) -> PrefetchConfig:
-    """Validate optional prefetch policy."""
+    """Validate optional nested prefetch policy."""
     if raw is None:
         return PrefetchConfig()
     if not isinstance(raw, dict):
         raise ConfigError("prefetch: must be a mapping", field="prefetch")
 
-    def boolean(name: str, default: bool) -> bool:
-        value = raw.get(name, default)
-        if not isinstance(value, bool):
-            raise ConfigError(f"prefetch.{name}: must be a boolean", field=f"prefetch.{name}")
-        return value
+    def category(name: str, default_enabled: bool) -> PrefetchCategory:
+        value = raw.get(name, {})
+        if not isinstance(value, dict):
+            raise ConfigError(f"prefetch.{name}: must be a mapping", field=f"prefetch.{name}")
+        enabled = value.get("enabled", default_enabled)
+        interval = value.get("refresh_interval_seconds", 300)
+        if not isinstance(enabled, bool):
+            raise ConfigError(f"prefetch.{name}.enabled: must be a boolean", field=f"prefetch.{name}.enabled")
+        if not isinstance(interval, int) or isinstance(interval, bool) or interval < 0:
+            raise ConfigError(
+                f"prefetch.{name}.refresh_interval_seconds: must be a non-negative integer",
+                field=f"prefetch.{name}.refresh_interval_seconds",
+            )
+        return PrefetchCategory(enabled=enabled, refresh_interval_seconds=interval)
 
-    def interval(name: str, default: int) -> int:
-        value = raw.get(name, default)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-            raise ConfigError(f"prefetch.{name}: must be a non-negative integer", field=f"prefetch.{name}")
-        return value
-
-    return PrefetchConfig(
-        directory_metadata=boolean("directory_metadata", True),
-        directory_metadata_refresh_interval_seconds=interval("directory_metadata_refresh_interval_seconds", 300),
-        fat=boolean("fat", False),
-        fat_refresh_interval_seconds=interval("fat_refresh_interval_seconds", 300),
-    )
+    return PrefetchConfig(directory_metadata=category("directory_metadata", True), fat=category("fat", False))
 
 
 def validate(raw: dict[str, object]) -> Config:

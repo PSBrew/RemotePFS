@@ -46,8 +46,8 @@ def preload(
     """
     policy = policy or PrefetchConfig()
     ranges = mapper.get_hot_ranges(
-        include_directory_metadata=policy.directory_metadata,
-        include_full_fat=policy.fat,
+        include_directory_metadata=policy.directory_metadata.enabled,
+        include_full_fat=policy.fat.enabled,
     )
     try:
         result = runner(
