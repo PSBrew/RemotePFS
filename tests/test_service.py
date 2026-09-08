@@ -152,7 +152,10 @@ entries:
     monkeypatch.setattr("remotepfs.service.grp.getgrnam", lambda name: type("Group", (), {"gr_gid": 0})())
     monkeypatch.setattr("remotepfs.service.os.chown", lambda path, uid, gid: None)
     monkeypatch.setattr("remotepfs.service.platform.system", lambda: "Linux")
-    monkeypatch.setattr("remotepfs.preloader.preload", lambda mapper, socket_path, policy: mapper.total_bytes)
+    monkeypatch.setattr(
+        "remotepfs.preloader.preload",
+        lambda mapper, socket_path, policy, **kwargs: mapper.total_bytes,
+    )
     service = RemotePfsService(
         str(config_path),
         state_path=str(tmp_path / "mapper.state"),

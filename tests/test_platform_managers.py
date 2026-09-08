@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from subprocess import CompletedProcess
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
+from remotepfs.config import PrefetchCategory, PrefetchConfig
 from remotepfs.gadget_manager import GadgetError, GadgetManager
 from remotepfs.mount_manager import MountError, MountManager
 from remotepfs.nbdkit_manager import NbdkitManager
-from remotepfs.preloader import build_nbdsh_command, preload
+from remotepfs.preloader import PrefetchWorker, build_nbdsh_command, preload
 
 
 def test_nbdkit_command_has_required_read_only_filter_order() -> None:
@@ -333,3 +336,61 @@ def test_systemd_units_preserve_privilege_split() -> None:
     assert "RestrictAddressFamilies=AF_UNIX" in nbdkit
     assert "--user" not in nbdkit
     assert "--group" not in nbdkit
+
+
+def test_prefetch_worker_runs_and_cancels(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Run one enabled pass, then cancel worker cleanly."""
+    calls: list[threading.Event] = []
+
+    def fake_preload(
+        mapper: Any,
+        *,
+        socket_path: str,
+        policy: PrefetchConfig,
+        stop_event: threading.Event,
+    ) -> int:
+        calls.append(stop_event)
+        stop_event.set()
+        return 4096
+
+    monkeypatch.setattr("remotepfs.preloader.preload", fake_preload)
+    passes: list[int] = []
+    policy = PrefetchConfig(
+        directory_metadata=PrefetchCategory(enabled=False, refresh_interval_seconds=0),
+        fat=PrefetchCategory(enabled=True, refresh_interval_seconds=300),
+    )
+    worker = PrefetchWorker(SimpleNamespace(), socket_path="/tmp/nbd.sock", policy=policy, on_pass=passes.append)
+    worker.start()
+    worker.thread.join(timeout=2)
+    worker.stop()
+
+    assert len(calls) == 1
+    assert passes == []
+
+
+def test_prefetch_worker_stop_cancels_active_pass(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stop worker while preload is active."""
+    started = threading.Event()
+
+    def blocking_preload(
+        mapper: Any,
+        *,
+        socket_path: str,
+        policy: PrefetchConfig,
+        stop_event: threading.Event,
+    ) -> int:
+        started.set()
+        stop_event.wait()
+        return 0
+
+    monkeypatch.setattr("remotepfs.preloader.preload", blocking_preload)
+    policy = PrefetchConfig(
+        directory_metadata=PrefetchCategory(enabled=True, refresh_interval_seconds=300),
+        fat=PrefetchCategory(enabled=False, refresh_interval_seconds=0),
+    )
+    worker = PrefetchWorker(SimpleNamespace(), socket_path="/tmp/nbd.sock", policy=policy, on_pass=lambda _: None)
+    worker.start()
+    assert started.wait(timeout=2)
+    worker.stop()
+
+    assert not worker.thread.is_alive()
