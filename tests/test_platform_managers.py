@@ -36,7 +36,9 @@ def test_nbdkit_command_has_required_read_only_filter_order() -> None:
         "maxlen=134217728",
         "cache-min-block-size=262144",
         "cache-max-size=1073741824",
+        "cache-high-threshold=95",
         "cache-on-read=true",
+        "cache-low-threshold=80",
     ]
     assert "--user" not in command
     assert "--group" not in command

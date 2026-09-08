@@ -16,12 +16,19 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import __version__, preloader
+from . import __version__
 from .api import create_app
 from .config import Config, ConfigError, load, parse, validate
+from .consts import (
+    CACHE_HIGH_THRESHOLD_PERCENT,
+    CACHE_LOW_THRESHOLD_PERCENT,
+    CACHE_MAX_SIZE_BYTES,
+    CACHE_MIN_BLOCK_SIZE_BYTES,
+)
 from .gadget_manager import GadgetManager
 from .mount_manager import MountManager
 from .nbdkit_manager import NbdkitManager
+from .preloader import PrefetchWorker
 
 logger = logging.getLogger(__name__)
 
@@ -94,17 +101,36 @@ class RemotePfsService:
         temporary_state.chmod(0o640)
         os.replace(temporary_state, state_file)
         self.nbd.start(image_size=generation.config.image_size_bytes, mapper_state=state_path)
-        self.prefetch_bytes_requested += preloader.preload(
+        self.nbd.connect()
+        self.gadget.bind(udc=generation.config.usb_port)
+        self._start_prefetch_worker(generation)
+
+    def _start_prefetch_worker(self, generation: CompiledGeneration) -> None:
+        """Start asynchronous prefetch after NBD and USB activation."""
+        self._stop_prefetch_worker()
+        self.prefetch_worker = PrefetchWorker(
             generation.mapper,
             socket_path=self.nbd.socket_path,
             policy=generation.config.prefetch,
+            on_pass=self._record_prefetch,
         )
-        self.prefetch_passes += 1
-        self.nbd.connect()
-        self.gadget.bind(udc=generation.config.usb_port)
+        self.prefetch_worker.start()
+
+    def _record_prefetch(self, requested: int) -> None:
+        """Record one completed asynchronous prefetch pass."""
+        with self._sync_reload_lock:
+            self.prefetch_bytes_requested += requested
+            self.prefetch_passes += 1
+
+    def _stop_prefetch_worker(self) -> None:
+        """Stop active prefetch worker."""
+        worker = getattr(self, "prefetch_worker", None)
+        if worker is not None:
+            worker.stop()
+            self.prefetch_worker = None
 
     async def shutdown(self) -> None:
-        """Stop gadget and NBD resources."""
+        self._stop_prefetch_worker()
         try:
             self.gadget.unbind()
         except Exception:
@@ -246,11 +272,12 @@ class RemotePfsService:
             "cache": {
                 "backend": "nbdkit-cache-filter",
                 "cache_on_read": True,
-                "max_size_bytes": 1_073_741_824,
-                "min_block_size_bytes": 262_144,
+                "max_size_bytes": CACHE_MAX_SIZE_BYTES,
+                "min_block_size_bytes": CACHE_MIN_BLOCK_SIZE_BYTES,
+                "high_threshold_percent": CACHE_HIGH_THRESHOLD_PERCENT,
+                "low_threshold_percent": CACHE_LOW_THRESHOLD_PERCENT,
                 "prefetch_bytes_requested": self.prefetch_bytes_requested,
                 "prefetch_passes": self.prefetch_passes,
-                "hit_miss_statistics_available": False,
             },
             "mounts": [self.mounts.status(source).__dict__ for source in active.config.sources] if active else [],
             "config": {
@@ -265,6 +292,7 @@ class RemotePfsService:
 
     def eject(self) -> None:
         """Unbind gadget without clearing state."""
+        self._stop_prefetch_worker()
         self.gadget.eject()
         self.gadget.unbind()
 

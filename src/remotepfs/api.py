@@ -12,6 +12,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .config import MAX_CONFIG_BYTES, ConfigError
+from .consts import (
+    CACHE_HIGH_THRESHOLD_PERCENT,
+    CACHE_LOW_THRESHOLD_PERCENT,
+    CACHE_MAX_SIZE_BYTES,
+    CACHE_MIN_BLOCK_SIZE_BYTES,
+)
 
 
 class ServiceInfo(BaseModel):
@@ -45,15 +51,16 @@ class NbdInfo(BaseModel):
 
 
 class CacheInfo(BaseModel):
-    """Read-cache configuration and prefetch counters."""
+    """Read-cache configuration and measurable prefetch counters."""
 
     backend: str = "nbdkit-cache-filter"
     cache_on_read: bool = True
-    max_size_bytes: int = 1_073_741_824
-    min_block_size_bytes: int = 262_144
+    max_size_bytes: int = CACHE_MAX_SIZE_BYTES
+    min_block_size_bytes: int = CACHE_MIN_BLOCK_SIZE_BYTES
+    high_threshold_percent: int = CACHE_HIGH_THRESHOLD_PERCENT
+    low_threshold_percent: int = CACHE_LOW_THRESHOLD_PERCENT
     prefetch_bytes_requested: int = 0
     prefetch_passes: int = 0
-    hit_miss_statistics_available: bool = False
 
 
 class MountInfo(BaseModel):

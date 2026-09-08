@@ -22,9 +22,10 @@ class FakeService:
                 "cache_on_read": True,
                 "max_size_bytes": 1_073_741_824,
                 "min_block_size_bytes": 262_144,
+                "high_threshold_percent": 95,
+                "low_threshold_percent": 80,
                 "prefetch_bytes_requested": 0,
                 "prefetch_passes": 0,
-                "hit_miss_statistics_available": False,
             },
             "mounts": [],
             "config": {

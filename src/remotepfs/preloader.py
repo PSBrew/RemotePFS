@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
+import threading
 from collections.abc import Callable
 
 from .config import PrefetchConfig
+
+logger = logging.getLogger(__name__)
 
 
 class PreloadError(RuntimeError):
@@ -63,3 +67,40 @@ def preload(
     if result.returncode != 0:
         raise PreloadError(result.stderr.strip() or "nbdsh metadata preload failed")
     return sum(length for _, length in ranges)
+
+
+class PrefetchWorker:
+    """Run cancellable asynchronous prefetch passes for one generation."""
+
+    def __init__(self, mapper, *, socket_path: str, policy: PrefetchConfig, on_pass: Callable[[int], None]) -> None:
+        """Initialize worker with immutable mapper and prefetch policy."""
+        self.mapper = mapper
+        self.socket_path = socket_path
+        self.policy = policy
+        self.on_pass = on_pass
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self._run, name="remotepfs-prefetch", daemon=True)
+
+    def start(self) -> None:
+        """Start background prefetch."""
+        self.thread.start()
+
+    def stop(self) -> None:
+        """Request stop and wait for worker exit."""
+        self.stop_event.set()
+        self.thread.join(timeout=5)
+
+    def _run(self) -> None:
+        """Prefetch immediately, then refresh at configured intervals."""
+        interval = min(
+            self.policy.directory_metadata.refresh_interval_seconds,
+            self.policy.fat.refresh_interval_seconds,
+        )
+        while not self.stop_event.is_set():
+            try:
+                requested = preload(self.mapper, socket_path=self.socket_path, policy=self.policy)
+                self.on_pass(requested)
+            except (OSError, PreloadError) as error:
+                logger.warning("metadata prefetch failed: %s", error)
+            if interval <= 0 or self.stop_event.wait(interval):
+                return

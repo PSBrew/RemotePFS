@@ -6,6 +6,13 @@ import subprocess
 import time
 from pathlib import Path
 
+from .consts import (
+    CACHE_HIGH_THRESHOLD_PERCENT,
+    CACHE_LOW_THRESHOLD_PERCENT,
+    CACHE_MAX_SIZE_BYTES,
+    CACHE_MIN_BLOCK_SIZE_BYTES,
+)
+
 DEFAULT_PLUGIN_PATH = "/opt/remotepfs/source/src/remotepfs/remotepfs_nbd.py"
 DEFAULT_UNIT = "remotepfs-nbdkit.service"
 DEFAULT_STATE_PATH = "/var/lib/remotepfs/mapper.state"
@@ -65,9 +72,11 @@ class NbdkitManager:
             "minblock=512",
             "maxdata=65536",
             "maxlen=134217728",
-            "cache-min-block-size=262144",
-            "cache-max-size=1073741824",
+            f"cache-min-block-size={CACHE_MIN_BLOCK_SIZE_BYTES}",
+            f"cache-max-size={CACHE_MAX_SIZE_BYTES}",
+            f"cache-high-threshold={CACHE_HIGH_THRESHOLD_PERCENT}",
             "cache-on-read=true",
+            f"cache-low-threshold={CACHE_LOW_THRESHOLD_PERCENT}",
         ]
 
     def start(self, *, image_size: int, mapper_state: str, foreground: bool = False) -> None:
