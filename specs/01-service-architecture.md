@@ -93,8 +93,8 @@ future providers can reuse the source contract.
 
 ```yaml
 global:
-  image_size_gib: 2048
-  cluster_size_kib: 64
+  image_size_gib: 2047
+  cluster_size_kib: 128
   label: REMOTEPFS
   oem_name: REMOTEPF
 sources:
@@ -138,6 +138,11 @@ protocol source mappings.
 - Build a sector address map: `[LBA → (source fd, file_offset, byte_count)]`.
 - Provide `pread()` entry point that resolves any LBA to metadata or source data.
 - Provide `extents()` for hole/sparse mapping and `NBDKIT_EXTENT_ZERO`.
+
+**PS5 exFAT compatibility:** The volume is presented as a superfloppy with the
+exFAT VBR at LBA 0, 512-byte sectors, and 128 KiB clusters. The UPCASE table
+is written uncompressed as 131,072 bytes. A PS5 mount failure may report
+`UVFAT_copyupcasetable` when this table is missing, compressed, or malformed.
 
 **Memory footprint:** ExFAT metadata is proportional to number of files.
 Rough estimate: ~1 MB per 1000 game files. At 4 GB RAM, easily holds

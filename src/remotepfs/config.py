@@ -18,7 +18,7 @@ MAX_ENTRIES = 10_000  # spec 05 hard limit
 MAX_VIRTUAL_PATH_LEN = 255  # exFAT limit
 
 IMAGE_SIZE_GIB_MIN = 1
-IMAGE_SIZE_GIB_MAX = 262_144  # 256 TiB, exFAT limit
+IMAGE_SIZE_GIB_MAX = 2047  # PS5-compatible MBR partition limit
 
 FORBIDDEN_PATTERNS = ("..", "./", "~")
 
@@ -90,11 +90,12 @@ class Config:
     sources: list[SourceConfig] = field(default_factory=list)
     entries: list[EntryConfig] = field(default_factory=list)
     usb_port: str = "auto"
+    image_size_bytes_override: int | None = None
 
     @property
     def image_size_bytes(self) -> int:
         """Virtual image size in bytes."""
-        return self.image_size_gib * 1024**3
+        return self.image_size_bytes_override or self.image_size_gib * 1024**3
 
     @property
     def mount_points(self) -> list[str]:
@@ -116,9 +117,9 @@ def _validate_no_traversal(path: str, field_name: str) -> None:
             raise ConfigError(f"{field_name}: path traversal pattern '{pattern}' rejected", field=field_name)
 
 
-def _validate_global(raw: dict[str, object]) -> tuple[int, int, str, str, str]:
-    """Validate global settings; return image, cluster, labels, and USB port."""
-    image_size_gib = raw.get("image_size_gib", 2048)
+def _validate_global(raw: dict[str, object]) -> tuple[int, int, str, str, str, int | None]:
+    """Validate global settings; return image, cluster, labels, USB port, and optional exact size."""
+    image_size_gib = raw.get("image_size_gib", IMAGE_SIZE_GIB_MAX)
     if not isinstance(image_size_gib, int) or isinstance(image_size_gib, bool):
         raise ConfigError("global.image_size_gib: must be an integer", field="global.image_size_gib")
     if not IMAGE_SIZE_GIB_MIN <= image_size_gib <= IMAGE_SIZE_GIB_MAX:
@@ -127,10 +128,25 @@ def _validate_global(raw: dict[str, object]) -> tuple[int, int, str, str, str]:
             field="global.image_size_gib",
         )
 
-    cluster_size_kib = raw.get("cluster_size_kib", 64)
-    if cluster_size_kib != 64:
+    image_size_bytes = raw.get("image_size_bytes")
+    if image_size_bytes is not None:
+        if not isinstance(image_size_bytes, int) or isinstance(image_size_bytes, bool):
+            raise ConfigError("global.image_size_bytes: must be an integer", field="global.image_size_bytes")
+        if image_size_bytes <= 0 or image_size_bytes % 512:
+            raise ConfigError(
+                "global.image_size_bytes: must be positive and a multiple of 512",
+                field="global.image_size_bytes",
+            )
+        if image_size_bytes > IMAGE_SIZE_GIB_MAX * 1024**3:
+            raise ConfigError(
+                f"global.image_size_bytes: must not exceed {IMAGE_SIZE_GIB_MAX} GiB",
+                field="global.image_size_bytes",
+            )
+
+    cluster_size_kib = raw.get("cluster_size_kib", 128)
+    if cluster_size_kib != 128:
         raise ConfigError(
-            "global.cluster_size_kib: must be exactly 64 (PS5 requirement)",
+            "global.cluster_size_kib: must be exactly 128 (PS5 requirement)",
             field="global.cluster_size_kib",
         )
 
@@ -148,7 +164,7 @@ def _validate_global(raw: dict[str, object]) -> tuple[int, int, str, str, str]:
             "global.usb_port: must be 'auto' or a non-empty UDC name",
             field="global.usb_port",
         )
-    return image_size_gib, cluster_size_kib, label, oem_name, usb_port
+    return image_size_gib, cluster_size_kib, label, oem_name, usb_port, image_size_bytes
 
 
 def _validate_sources(raw: list[object]) -> list[SourceConfig]:
@@ -276,13 +292,11 @@ def validate(raw: dict[str, object]) -> Config:
     g = raw.get("global")
     if not isinstance(g, dict):
         raise ConfigError("global section is required", field="global")
-    image_size_gib, cluster_size_kib, label, oem_name, usb_port = _validate_global(g)
-
+    image_size_gib, cluster_size_kib, label, oem_name, usb_port, image_size_bytes = _validate_global(g)
     sources_raw = raw.get("sources")
     if not isinstance(sources_raw, list):
         raise ConfigError("sources sequence is required", field="sources")
     sources = _validate_sources(sources_raw)
-
     entries_raw = raw.get("entries")
     if not isinstance(entries_raw, list):
         raise ConfigError("entries sequence is required", field="entries")
@@ -295,6 +309,7 @@ def validate(raw: dict[str, object]) -> Config:
         sources=sources,
         entries=entries,
         usb_port=usb_port,
+        image_size_bytes_override=image_size_bytes,
     )
 
 

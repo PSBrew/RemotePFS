@@ -10,8 +10,6 @@ import logging
 import os
 import struct
 import sys
-import uuid
-import zlib
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -21,6 +19,7 @@ if TYPE_CHECKING:
 from .consts import (
     BOOT_REGION_SECTORS,
     BOOT_REGION_TOTAL_SECTORS,
+    CLUSTER_HEAP_ALIGNMENT_SECTORS,
     CLUSTER_SIZE_BYTES,
     ENTRY_BITMAP,
     ENTRY_FILE,
@@ -39,7 +38,7 @@ from .consts import (
 
 EXFAT_MIN_TIMESTAMP_SECONDS = calendar.timegm((1980, 1, 1, 0, 0, 0))
 EXFAT_MAX_TIMESTAMP_SECONDS = calendar.timegm((2107, 12, 31, 23, 59, 59))
-GPT_PARTITION_TRAILER_SECTORS = 33
+MBR_PARTITION_TYPE = 0x07
 
 
 class _StatxTimestamp(ctypes.Structure):
@@ -304,20 +303,18 @@ class ExfatBuilder:
 
         roots = self._build_tree()
         fat_offset, fat_length, cluster_heap_offset, cluster_count = self._geometry()
-        next_cluster = 2
-        # Reserve directory clusters first, so directory and metadata reads stay hot.
+        bitmap_length = (cluster_count + 7) // 8
+        bitmap_clusters = max(1, (bitmap_length + CLUSTER_SIZE_BYTES - 1) // CLUSTER_SIZE_BYTES)
+        bitmap_cluster = 2
+        upcase_cluster = bitmap_cluster + bitmap_clusters
+        upcase_clusters = max(1, (UPCASE_TABLE_BYTES + CLUSTER_SIZE_BYTES - 1) // CLUSTER_SIZE_BYTES)
+        next_cluster = upcase_cluster + upcase_clusters
+        # Reserve bitmap and upcase extents before directory allocation.
         for node in self._walk(roots):
             node.cluster_count = self._directory_cluster_count(node) if node.is_directory else 0
             if node.is_directory:
                 node.first_cluster = next_cluster
                 next_cluster += node.cluster_count
-        bitmap_length = (cluster_count + 7) // 8
-        bitmap_clusters = max(1, (bitmap_length + CLUSTER_SIZE_BYTES - 1) // CLUSTER_SIZE_BYTES)
-        bitmap_cluster = next_cluster
-        next_cluster += bitmap_clusters
-        upcase_cluster = next_cluster
-        upcase_clusters = max(1, (UPCASE_TABLE_BYTES + CLUSTER_SIZE_BYTES - 1) // CLUSTER_SIZE_BYTES)
-        next_cluster += upcase_clusters
 
         mappings: list[FileMapping] = []
         for node in self._walk(roots):
@@ -354,7 +351,6 @@ class ExfatBuilder:
                     self._directory_bytes(node, False, bitmap_cluster, bitmap_length, upcase_cluster, len(upcase)),
                 )
 
-        self._put_mbr_gpt(metadata)
         entries = tuple(self._entry_record(node, parent_path="") for node in self._walk(root.children))
         hot_ranges = self._ranges(metadata)
         return ExfatLayout(
@@ -477,18 +473,23 @@ class ExfatBuilder:
         return max(1, (count * 32 + CLUSTER_SIZE_BYTES - 1) // CLUSTER_SIZE_BYTES)
 
     def _geometry(self) -> tuple[int, int, int, int]:
-        """Compute self-consistent FAT and cluster heap geometry."""
-        partition_sectors = self.total_sectors - PARTITION_START_LBA - GPT_PARTITION_TRAILER_SECTORS
-        fat_offset = BOOT_REGION_TOTAL_SECTORS
+        """Compute self-consistent FAT and aligned cluster heap geometry."""
+        partition_sectors = self.total_sectors - PARTITION_START_LBA
+        fat_offset = 2048
         cluster_count = 0
-        fat_length = 1
+        fat_length = SECTORS_PER_CLUSTER
+        cluster_heap_offset = fat_offset + fat_length
         for _ in range(8):
-            cluster_count = (partition_sectors - fat_offset - fat_length) // SECTORS_PER_CLUSTER
+            cluster_heap_offset = (
+                (fat_offset + fat_length + CLUSTER_HEAP_ALIGNMENT_SECTORS - 1) // CLUSTER_HEAP_ALIGNMENT_SECTORS
+            ) * CLUSTER_HEAP_ALIGNMENT_SECTORS
+            cluster_count = (partition_sectors - cluster_heap_offset) // SECTORS_PER_CLUSTER
             new_length = max(1, (cluster_count * 4 + SECTOR_SIZE - 1) // SECTOR_SIZE)
+            new_length = ((new_length + SECTORS_PER_CLUSTER - 1) // SECTORS_PER_CLUSTER) * SECTORS_PER_CLUSTER
             if new_length == fat_length:
                 break
             fat_length = new_length
-        return fat_offset, fat_length, fat_offset + fat_length, cluster_count
+        return fat_offset, fat_length, cluster_heap_offset, cluster_count
 
     def _fat_bytes(
         self,
@@ -523,7 +524,7 @@ class ExfatBuilder:
         root_cluster: int,
     ) -> None:
         """Write primary and backup exFAT boot sectors with checksums."""
-        partition_sectors = self.total_sectors - PARTITION_START_LBA - GPT_PARTITION_TRAILER_SECTORS
+        partition_sectors = self.total_sectors - PARTITION_START_LBA
         boot = bytearray((BOOT_REGION_SECTORS - 1) * SECTOR_SIZE)
         struct.pack_into("<3s8s", boot, 0, b"\xeb\x76\x90", b"EXFAT   ")
         boot[11:64] = b"\0" * 53
@@ -538,7 +539,7 @@ class ExfatBuilder:
         struct.pack_into("<I", boot, 100, serial)
         struct.pack_into("<H", boot, 104, 0x0100)
         struct.pack_into("<H", boot, 106, 0)
-        boot[108:113] = bytes((9, 7, 1, 0x80, 0))
+        boot[108:113] = bytes((9, 8, 1, 0x80, 0xFF))
         boot[510:512] = EXFAT_BOOT_SIGNATURE
         checksum = self._boot_checksum(boot)
         checksum_sector = struct.pack("<I", checksum) * (SECTOR_SIZE // 4)
@@ -583,22 +584,9 @@ class ExfatBuilder:
         return ord(upper) if len(upper) == 1 and ord(upper) <= 0xFFFF else codepoint
 
     def _upcase_table(self) -> bytes:
-        """Build compressed exFAT upcase table for all UTF-16 code units."""
-
-        values: list[int] = []
-        codepoint = 0
-        while codepoint <= 0xFFFF:
-            upper = self._simple_upper(codepoint)
-            if upper != codepoint:
-                values.append(upper)
-                codepoint += 1
-                continue
-            end = codepoint + 1
-            while end <= 0xFFFF and end - codepoint < 0xFFFF and self._simple_upper(end) == end:
-                end += 1
-            values.extend((0xFFFF, end - codepoint))
-            codepoint = end
-        return struct.pack(f"<{len(values)}H", *values)
+        """Build uncompressed exFAT upcase table for all UTF-16 code units."""
+        values = [self._upcase_codepoint(codepoint) for codepoint in range(0x10000)]
+        return struct.pack("<65536H", *values)
 
     def _upcase_codepoint(self, codepoint: int) -> int:
         """Return exFAT-compatible uppercase mapping for one UTF-16 unit."""
@@ -734,73 +722,6 @@ class ExfatBuilder:
             parent_path=parent_path,
         )
 
-    def _put_mbr_gpt(self, metadata: dict[int, bytes]) -> None:
-        """Write valid protective MBR and primary/backup GPT metadata."""
-        total_sectors = self.total_sectors
-        mbr = bytearray(SECTOR_SIZE)
-        mbr[446 + 4] = 0xEE
-        struct.pack_into(
-            "<II", mbr, 446 + 8, PARTITION_START_LBA, min(total_sectors - PARTITION_START_LBA, 0xFFFFFFFF)
-        )
-        mbr[510:512] = EXFAT_BOOT_SIGNATURE
-        metadata[0] = bytes(mbr)
-
-        partition_type = uuid.UUID("EBD0A0A2-B9E5-4433-87C0-68B6B72699C7").bytes_le
-        partition_guid = uuid.uuid5(uuid.NAMESPACE_DNS, "remotepfs").bytes_le
-        entry = bytearray(128)
-        entry[:16] = partition_type
-        entry[16:32] = partition_guid
-        struct.pack_into("<QQ", entry, 32, PARTITION_START_LBA, total_sectors - GPT_PARTITION_TRAILER_SECTORS - 1)
-        name = "RemotePFS".encode("utf-16le")
-        entry[56 : 56 + len(name)] = name
-        entries = bytes(entry).ljust(32 * SECTOR_SIZE, b"\0")
-        entries_crc = zlib.crc32(entries) & 0xFFFFFFFF
-
-        disk_guid = uuid.uuid5(uuid.NAMESPACE_DNS, "remotepfs-header").bytes_le
-        primary_header = self._gpt_header(
-            current_lba=1,
-            backup_lba=total_sectors - 1,
-            entries_lba=2,
-            disk_guid=disk_guid,
-            entries_crc=entries_crc,
-            total_sectors=total_sectors,
-        )
-        backup_entries_lba = total_sectors - 33
-        backup_header = self._gpt_header(
-            current_lba=total_sectors - 1,
-            backup_lba=1,
-            entries_lba=backup_entries_lba,
-            disk_guid=disk_guid,
-            entries_crc=entries_crc,
-            total_sectors=total_sectors,
-        )
-        for index in range(32):
-            sector = entries[index * SECTOR_SIZE : (index + 1) * SECTOR_SIZE]
-            metadata[2 + index] = sector
-            metadata[backup_entries_lba + index] = sector
-        metadata[1] = primary_header
-        metadata[total_sectors - 1] = backup_header
-
-    @staticmethod
-    def _gpt_header(
-        *,
-        current_lba: int,
-        backup_lba: int,
-        entries_lba: int,
-        disk_guid: bytes,
-        entries_crc: int,
-        total_sectors: int,
-    ) -> bytes:
-        """Build one CRC-valid GPT header."""
-        header = bytearray(SECTOR_SIZE)
-        header[:8] = b"EFI PART"
-        struct.pack_into("<II", header, 8, 0x00010000, 92)
-        struct.pack_into("<QQQQ", header, 24, current_lba, backup_lba, 34, total_sectors - 34)
-        header[56:72] = disk_guid
-        struct.pack_into("<QIII", header, 72, entries_lba, 128, 128, entries_crc)
-        struct.pack_into("<I", header, 16, zlib.crc32(header[:92]) & 0xFFFFFFFF)
-        return bytes(header)
-
     @staticmethod
     def _ranges(metadata: dict[int, bytes]) -> tuple[tuple[int, int], ...]:
         """Collapse contiguous metadata sectors into hot byte ranges."""
@@ -830,7 +751,7 @@ def scan_directory(source_path: str, virtual_parent: str = "") -> list[VirtualEn
 
     from .config import Config
 
-    config = Config(1, 64, "REMOTEPFS", "REMOTEPF", entries=[])
+    config = Config(1, 128, "REMOTEPFS", "REMOTEPF", entries=[])
     builder = ExfatBuilder(config)
     root = _Node(virtual_parent, virtual_parent, source_path, True)
     builder._scan(root)

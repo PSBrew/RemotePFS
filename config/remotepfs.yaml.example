@@ -2,8 +2,8 @@
 # Use protocol: nfs with an NFS endpoint when NFS client support exists.
 
 global:
-  image_size_gib: 512
-  cluster_size_kib: 64
+  image_size_gib: 2047
+  cluster_size_kib: 128
   label: REMOTEPFS
   oem_name: REMOTEPF
   # USB device controller: use `auto`, or set explicit UDC name from SBC listing.

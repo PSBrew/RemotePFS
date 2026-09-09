@@ -89,7 +89,7 @@ def test_gadget_manager_writes_configfs_values(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(manager, "_write", record_write)
     bound = manager.bind(lun_file="/dev/nbd0")
     assert bound == "test.udc"
-    assert (configfs / "remotepfs" / "idVendor").read_text() == "0x1d6b"
+    assert (configfs / "remotepfs" / "idVendor").read_text() == "0x0781"
     assert (configfs / "remotepfs" / "functions/mass_storage.0/lun.0/ro").read_text() == "1"
     lun_file = configfs / "remotepfs/functions/mass_storage.0/lun.0/file"
     assert writes.index(configfs / "remotepfs/functions/mass_storage.0/lun.0/ro") < writes.index(lun_file)

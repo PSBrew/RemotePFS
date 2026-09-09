@@ -189,10 +189,11 @@ Format: `(Year - 1980) << 25 | Month << 21 | Day << 16 | Hour << 11 | Minute << 
 
 ## UPCASE Table
 
-- Contains uppercase equivalents for all Unicode characters.
-- Default table embedded in compressor and provided by Microsoft.
+- Contains uncompressed uppercase mappings for all 65,536 UTF-16 code units.
 - Required for case-insensitive filename matching.
-- Size: 5836 entries × 2 bytes = 11,672 bytes (compressed in spec).
+- RemotePFS writes the full 131,072-byte table into one 128 KiB cluster.
+- PS5 validation rejected earlier layouts when the first 128 bytes were not the
+  expected uncompressed mapping (`UVFAT_copyupcasetable`).
 
 ## Relevance to RemotePFS
 
