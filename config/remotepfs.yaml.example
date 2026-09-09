@@ -15,10 +15,10 @@ global:
 prefetch:
   directory_metadata:
     enabled: true
-    refresh_interval_seconds: 300
+    refresh_interval_seconds: 60
   fat:
     enabled: true
-    refresh_interval_seconds: 300
+    refresh_interval_seconds: 60
 
 sources:
   - name: nas1
