@@ -17,6 +17,16 @@ class FakeService:
             "service": {"version": "0.1.0", "uptime_seconds": 1, "state": "running", "state_detail": "serving"},
             "gadget": {"udc_bound": False, "udc_name": None, "lun_file": None, "lun_ro": True, "lun_size_bytes": None},
             "nbd": {"connected": False, "socket_path": "/run/remotepfs/nbd.sock"},
+            "cache": {
+                "backend": "nbdkit-cache-filter",
+                "cache_on_read": True,
+                "max_size_bytes": 1_073_741_824,
+                "min_block_size_bytes": 262_144,
+                "high_threshold_percent": 95,
+                "low_threshold_percent": 80,
+                "prefetch_bytes_requested": 0,
+                "prefetch_passes": 0,
+            },
             "mounts": [],
             "config": {
                 "path": "/tmp/remotepfs.yaml",
@@ -52,6 +62,9 @@ def test_status_shape() -> None:
     response = client.get("/api/status")
     assert response.status_code == 200
     assert response.json()["nbd"]["socket_path"] == "/run/remotepfs/nbd.sock"
+    body = response.json()
+    assert body["cache"]["backend"] == "nbdkit-cache-filter"
+    assert body["cache"]["prefetch_passes"] == 0
 
 
 def test_put_rejects_unsupported_media_type() -> None:

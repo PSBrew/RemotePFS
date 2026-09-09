@@ -71,6 +71,24 @@ Two-tier design eliminates redundant work:
 
 ---
 
+## Metadata prefetch policy
+
+Activation performs synchronous, bounded prefetch through NBD before USB bind.
+Directory metadata and full FAT prefetch are enabled by default. Full FAT size
+is proportional to virtual image size, but reads are split into 64 KiB requests
+and the FAT is never expanded into a Python in-memory blob.
+
+Configuration uses nested categories:
+
+```yaml
+prefetch:
+  directory_metadata: {enabled: true, refresh_interval_seconds: 300}
+  fat: {enabled: true, refresh_interval_seconds: 300}
+```
+
+The interval is reserved for future asynchronous incremental refresh. Current
+nbdkit cache remains the only verified file-cache layer.
+
 ## 2. L1: nbdkit Cache Filter
 
 ### 2.1 Configuration

@@ -80,6 +80,22 @@ class EntryConfig:
 
 
 @dataclass(frozen=True)
+class PrefetchCategory:
+    """Validated settings for one prefetch category."""
+
+    enabled: bool
+    refresh_interval_seconds: int = 300
+
+
+@dataclass(frozen=True)
+class PrefetchConfig:
+    """Validated policy for asynchronous metadata cache warming."""
+
+    directory_metadata: PrefetchCategory = field(default_factory=lambda: PrefetchCategory(enabled=True))
+    fat: PrefetchCategory = field(default_factory=lambda: PrefetchCategory(enabled=True))
+
+
+@dataclass(frozen=True)
 class Config:
     """Validated RemotePFS configuration."""
 
@@ -90,6 +106,7 @@ class Config:
     sources: list[SourceConfig] = field(default_factory=list)
     entries: list[EntryConfig] = field(default_factory=list)
     usb_port: str = "auto"
+    prefetch: PrefetchConfig = field(default_factory=PrefetchConfig)
     image_size_bytes_override: int | None = None
 
     @property
@@ -284,6 +301,31 @@ def _validate_entries(raw: list[object], mount_points: list[str]) -> list[EntryC
     return entries
 
 
+def _validate_prefetch(raw: object) -> PrefetchConfig:
+    """Validate optional nested prefetch policy."""
+    if raw is None:
+        return PrefetchConfig()
+    if not isinstance(raw, dict):
+        raise ConfigError("prefetch: must be a mapping", field="prefetch")
+
+    def category(name: str, default_enabled: bool) -> PrefetchCategory:
+        value = raw.get(name, {})
+        if not isinstance(value, dict):
+            raise ConfigError(f"prefetch.{name}: must be a mapping", field=f"prefetch.{name}")
+        enabled = value.get("enabled", default_enabled)
+        interval = value.get("refresh_interval_seconds", 300)
+        if not isinstance(enabled, bool):
+            raise ConfigError(f"prefetch.{name}.enabled: must be a boolean", field=f"prefetch.{name}.enabled")
+        if not isinstance(interval, int) or isinstance(interval, bool) or interval < 0:
+            raise ConfigError(
+                f"prefetch.{name}.refresh_interval_seconds: must be a non-negative integer",
+                field=f"prefetch.{name}.refresh_interval_seconds",
+            )
+        return PrefetchCategory(enabled=enabled, refresh_interval_seconds=interval)
+
+    return PrefetchConfig(directory_metadata=category("directory_metadata", True), fat=category("fat", True))
+
+
 def validate(raw: dict[str, object]) -> Config:
     """Validate parsed YAML data and return a Config."""
     if not isinstance(raw, dict):
@@ -301,6 +343,7 @@ def validate(raw: dict[str, object]) -> Config:
     if not isinstance(entries_raw, list):
         raise ConfigError("entries sequence is required", field="entries")
     entries = _validate_entries(entries_raw, sorted((s.mount_point for s in sources), key=len, reverse=True))
+    prefetch = _validate_prefetch(raw.get("prefetch"))
     return Config(
         image_size_gib=image_size_gib,
         cluster_size_kib=cluster_size_kib,
@@ -309,6 +352,7 @@ def validate(raw: dict[str, object]) -> Config:
         sources=sources,
         entries=entries,
         usb_port=usb_port,
+        prefetch=prefetch,
         image_size_bytes_override=image_size_bytes,
     )
 

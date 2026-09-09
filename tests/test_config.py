@@ -44,6 +44,32 @@ def test_parse_valid_config() -> None:
     assert cfg.image_size_bytes == 512 * 1024**3
 
 
+def test_prefetch_defaults_are_enabled() -> None:
+    """Enable directory metadata and full FAT by default."""
+    cfg = parse(VALID)
+    assert cfg.prefetch.directory_metadata.enabled is True
+    assert cfg.prefetch.fat.enabled is True
+    assert cfg.prefetch.directory_metadata.refresh_interval_seconds == 300
+    assert cfg.prefetch.fat.refresh_interval_seconds == 300
+
+
+def test_prefetch_policy_is_validated() -> None:
+    """Reject invalid nested prefetch types and intervals."""
+    invalid_configs = (
+        VALID + "prefetch:\n  fat:\n    enabled: 1\n",
+        VALID + "prefetch:\n  fat:\n    refresh_interval_seconds: -1\n",
+    )
+    for text in invalid_configs:
+        with pytest.raises(ConfigError, match="prefetch"):
+            parse(text)
+
+
+def test_full_fat_prefetch_policy_is_enabled() -> None:
+    """Parse explicit full-FAT prefetch settings."""
+    cfg = parse(VALID + "prefetch:\n  fat:\n    enabled: true\n    refresh_interval_seconds: 300\n")
+    assert cfg.prefetch.fat.enabled is True
+
+
 def test_exact_image_size_override() -> None:
     """Allow matching a reference device whose size is not a whole GiB."""
     exact_size = 250148290560

@@ -39,6 +39,15 @@ Returns current service state.
     "bytes_served": 827364829172,
     "read_errors": 0
   },
+  "cache": {
+    "backend": "nbdkit-cache-filter",
+    "cache_on_read": true,
+    "max_size_bytes": 1073741824,
+    "min_block_size_bytes": 262144,
+    "prefetch_bytes_requested": 134152192,
+    "prefetch_passes": 1,
+    "hit_miss_statistics_available": false
+  },
   "mounts": [
     {
       "name": "nas1",

@@ -175,28 +175,31 @@ class SectorMapper:
             result.append((run_start, cursor - run_start, is_zero))
         return result
 
-    def get_hot_ranges(self) -> list[tuple[int, int]]:
-        """Return bounded ranges covering eager metadata and directory chains."""
+    def get_hot_ranges(
+        self, *, include_directory_metadata: bool = True, include_full_fat: bool = False
+    ) -> list[tuple[int, int]]:
+        """Return bounded ranges selected by metadata and FAT prefetch policy."""
         fat_start = self.layout.partition_start_lba + self.layout.fat_offset
-        fat_ranges: list[tuple[int, int]] = []
-        directory_clusters = [(self.layout.root_dir_cluster, 1)] + [
-            (entry.first_cluster, entry.cluster_count)
-            for entry in self.layout.entries
-            if entry.is_directory and entry.cluster_count
-        ]
-        for first_cluster, cluster_count in directory_clusters:
-            first_byte = first_cluster * 4
-            last_byte = (first_cluster + cluster_count) * 4
-            first_sector = first_byte // SECTOR_SIZE
-            sector_count = (last_byte + SECTOR_SIZE - 1) // SECTOR_SIZE - first_sector
-            fat_ranges.append(((fat_start + first_sector) * SECTOR_SIZE, sector_count * SECTOR_SIZE))
-        bitmap_start = self._file_start_sector(FileMapping(self.layout.bitmap_cluster, 1, "", 0, ""))
-        bitmap_sectors = (self.layout.bitmap_length + SECTOR_SIZE - 1) // SECTOR_SIZE
-        ranges = [
-            *self.layout.hot_ranges,
-            *fat_ranges,
-            (bitmap_start * SECTOR_SIZE, bitmap_sectors * SECTOR_SIZE),
-        ]
+        ranges: list[tuple[int, int]] = []
+        if include_directory_metadata:
+            fat_ranges: list[tuple[int, int]] = []
+            directory_clusters = [(self.layout.root_dir_cluster, 1)] + [
+                (entry.first_cluster, entry.cluster_count)
+                for entry in self.layout.entries
+                if entry.is_directory and entry.cluster_count
+            ]
+            for first_cluster, cluster_count in directory_clusters:
+                first_byte = first_cluster * 4
+                last_byte = (first_cluster + cluster_count) * 4
+                first_sector = first_byte // SECTOR_SIZE
+                sector_count = (last_byte + SECTOR_SIZE - 1) // SECTOR_SIZE - first_sector
+                fat_ranges.append(((fat_start + first_sector) * SECTOR_SIZE, sector_count * SECTOR_SIZE))
+            bitmap_start = self._file_start_sector(FileMapping(self.layout.bitmap_cluster, 1, "", 0, ""))
+            bitmap_sectors = (self.layout.bitmap_length + SECTOR_SIZE - 1) // SECTOR_SIZE
+            ranges.extend((*self.layout.hot_ranges, *fat_ranges))
+            ranges.append((bitmap_start * SECTOR_SIZE, bitmap_sectors * SECTOR_SIZE))
+        if include_full_fat:
+            ranges.append((fat_start * SECTOR_SIZE, self.layout.fat_length * SECTOR_SIZE))
         return self._bounded_ranges(ranges)
 
     @staticmethod
