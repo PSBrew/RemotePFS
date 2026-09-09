@@ -382,8 +382,8 @@ reference an external credential file for CIFS:
 
 ```yaml
 global:
-  image_size_gib: 2048
-  cluster_size_kib: 64
+  image_size_gib: 2047
+  cluster_size_kib: 128
   label: REMOTEPFS
   oem_name: REMOTEPF
 sources:
@@ -411,7 +411,7 @@ The config compiler enforces strict validation on all fields:
 
 | Field                  | Validation                                                                           |
 |------------------------|---------------------------------------------------------------------------------------|
-| `global.image_size_gib`| Integer >= 1 and <= 262144 (exFAT limit).                                            |
+| `global.image_size_gib`| Integer >= 1 and <= 2047 (PS5-compatible MBR partition limit).              |
 | `global.cluster_size_kib` | Exactly 64. Locked for PS5 compatibility.                                         |
 | `global.label`         | Uppercase ASCII, length <= 11.                                                       |
 | `global.oem_name`      | Uppercase ASCII, length == 8.                                                        |

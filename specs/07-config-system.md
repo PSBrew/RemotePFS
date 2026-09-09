@@ -36,8 +36,8 @@ The config system defines protocol-backed sources and virtual exFAT layout mappi
 # remotepfs.yaml — Virtual exFAT layout for RemotePFS
 
 global:
-  image_size_gib: 2048
-  cluster_size_kib: 64
+  image_size_gib: 2047
+  cluster_size_kib: 128
   label: REMOTEPFS
   oem_name: REMOTEPF
   usb_port: auto
@@ -82,7 +82,7 @@ entries:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `image_size_gib` | u64 | 2048 | Virtual image size in GiB. Must be >= space needed for all entries + metadata. |
+| `image_size_gib` | u64 | 2047 | Virtual image size in GiB. Must be >= space needed for all entries + metadata and <= 2047 for the PS5-compatible MBR layout. |
 | `cluster_size_kib` | u64 | 64 | Cluster size in KiB. Locked to 64 for PS5 compatibility (ShadowMountPlus). |
 | `label` | str | "RemotePFS" | Volume label, uppercase, 11 chars max |
 | `oem_name` | str | "REMOTEPFS" | OEM name, 8 chars |
@@ -109,8 +109,8 @@ entries:
 
 ### Validation Rules
 
-1. `image_size_gib` must be >= 1 and <= 262144 (256 TiB, exFAT limit)
-2. `cluster_size_kib` must be exactly 64 (PS5 requirement)
+1. `image_size_gib` must be >= 1 and <= 2047 (PS5-compatible MBR partition limit)
+2. `cluster_size_kib` must be exactly 128 (PS5 requirement)
 3. `label`: length <= 11, uppercase ASCII only
 4. `oem_name`: length == 8, uppercase ASCII only
 5. `usb_port` must be `auto` or a non-empty UDC name without `/`

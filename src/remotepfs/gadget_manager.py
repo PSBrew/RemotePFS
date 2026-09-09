@@ -8,8 +8,8 @@ import uuid
 from pathlib import Path
 
 GADGET_NAME = "remotepfs"
-VENDOR_ID = "0x1d6b"
-PRODUCT_ID = "0x0104"
+VENDOR_ID = "0x0781"
+PRODUCT_ID = "0x55ab"
 
 
 class GadgetError(RuntimeError):
@@ -77,13 +77,13 @@ class GadgetManager:
         self._write(self.root / "idVendor", VENDOR_ID)
         self._write(self.root / "idProduct", PRODUCT_ID)
         self._write(self.root / "bcdDevice", "0x0100")
-        self._write(self.root / "bcdUSB", "0x0300")
-        self._write(strings / "manufacturer", "RemotePFS")
-        self._write(strings / "product", "Virtual exFAT Drive")
+        self._write(self.root / "bcdUSB", "0x0320")
+        self._write(strings / "manufacturer", "USB")
+        self._write(strings / "product", "SanDisk 3.2Gen1")
         self._write(strings / "serialnumber", self._serial())
         self._write(config / "MaxPower", "250")
         self._write(config / "bmAttributes", "0x80")
-        self._write(config_strings / "configuration", "RemotePFS Config")
+        self._write(config_strings / "configuration", "SanDisk 3.2Gen1")
         self._write(lun / "ro", "1")
         self._write(lun / "nofua", "1")
         self._write(self.root / "functions" / "mass_storage.0" / "stall", "1")

@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import pickle
 import struct
-import zlib
 
 from remotepfs.config import parse
 from remotepfs.consts import PARTITION_START_LBA, SECTOR_SIZE, SECTORS_PER_CLUSTER
@@ -25,7 +24,7 @@ from remotepfs.sector_mapper import SectorMapper
 def _config(tmp_path, filename: str) -> str:
     return f"""global:
   image_size_gib: 1
-  cluster_size_kib: 64
+  cluster_size_kib: 128
   label: REMOTEPFS
   oem_name: REMOTEPF
 sources:
@@ -66,44 +65,37 @@ def test_build_exfat_and_mapper_reads_file_and_metadata(tmp_path) -> None:
         mapper.close()
 
 
-def test_build_exfat_writes_crc_valid_gpt(tmp_path) -> None:
-    """Build valid primary and backup GPT metadata for host partition parsers."""
+def test_build_exfat_writes_ps5_compatible_superfloppy(tmp_path) -> None:
+    """Build whole-disk exFAT with its VBR at LBA zero."""
     source = tmp_path / "file.bin"
     source.write_bytes(b"payload")
     mapper = SectorMapper.from_layout(build_exfat(parse(_config(tmp_path, source.name))))
     try:
-        total_sectors = mapper.layout.total_sectors
-        primary = mapper.layout.metadata[1]
-        backup = mapper.layout.metadata[total_sectors - 1]
-        entries = b"".join(mapper.layout.metadata[index] for index in range(2, 34))
-        entries_crc = zlib.crc32(entries) & 0xFFFFFFFF
-        partition_start = struct.unpack_from("<Q", entries, 32)[0]
-        partition_end = struct.unpack_from("<Q", entries, 40)[0]
-        assert partition_start == mapper.layout.partition_start_lba
-        assert partition_end == total_sectors - 34
-        primary_vbr = mapper.layout.metadata[partition_start]
-        expected_partition_length = partition_end - partition_start + 1
-        assert struct.unpack_from("<Q", primary_vbr, 72)[0] == expected_partition_length
-        backup_start = partition_start + 12
-        backup_vbr = mapper.layout.metadata[backup_start]
-        assert struct.unpack_from("<Q", backup_vbr, 72)[0] == expected_partition_length
-        assert mapper.layout.metadata[partition_start + 11][:4] != b"\0\0\0\0"
-        assert mapper.layout.metadata[backup_start + 11][:4] != b"\0\0\0\0"
+        vbr = mapper.layout.metadata[0]
+        assert vbr[3:11] == b"EXFAT   "
+        assert vbr[510:512] == b"\x55\xaa"
+        assert struct.unpack_from("<Q", vbr, 64)[0] == 0
+        assert struct.unpack_from("<Q", vbr, 72)[0] == mapper.layout.total_sectors
+        assert mapper.read_bytes(0, 8) == b"\xebv\x90EXFAT"
+    finally:
+        mapper.close()
 
-        for header, current_lba, backup_lba, entries_lba in (
-            (primary, 1, total_sectors - 1, 2),
-            (backup, total_sectors - 1, 1, total_sectors - 33),
-        ):
-            assert header[:8] == b"EFI PART"
-            assert struct.unpack_from("<Q", header, 24)[0] == current_lba
-            assert struct.unpack_from("<Q", header, 32)[0] == backup_lba
-            assert struct.unpack_from("<Q", header, 72)[0] == entries_lba
-            assert struct.unpack_from("<I", header, 88)[0] == entries_crc
-            header_size = struct.unpack_from("<I", header, 12)[0]
-            stored_crc = struct.unpack_from("<I", header, 16)[0]
-            check = bytearray(header[:header_size])
-            struct.pack_into("<I", check, 16, 0)
-            assert zlib.crc32(check) & 0xFFFFFFFF == stored_crc
+
+def test_reference_geometry_aligns_cluster_heap(tmp_path) -> None:
+    """Match reference exFAT geometry with exact size and aligned heap."""
+    source = tmp_path / "file.bin"
+    source.write_bytes(b"payload")
+    config_text = _config(tmp_path, source.name).replace(
+        "image_size_gib: 1",
+        "image_size_gib: 233\n  image_size_bytes: 250148290560",
+    )
+    mapper = SectorMapper.from_layout(build_exfat(parse(config_text)))
+    try:
+        assert mapper.layout.total_sectors == 488570880
+        assert mapper.layout.fat_offset == 2048
+        assert mapper.layout.fat_length == 15104
+        assert mapper.layout.cluster_heap_offset == 18432
+        assert mapper.layout.root_dir_cluster == 5
     finally:
         mapper.close()
 
@@ -159,7 +151,7 @@ def test_file_and_directory_timestamps_use_source_metadata(tmp_path) -> None:
     config = parse(
         f"""global:
   image_size_gib: 1
-  cluster_size_kib: 64
+  cluster_size_kib: 128
   label: TEST
 sources:
   - name: local
@@ -379,18 +371,23 @@ def test_directory_checksums_and_bitmap_cover_allocated_clusters(tmp_path) -> No
                     * 512,
                     upcase_length,
                 )
+                assert upcase_data[:8] == b"\x00\x00\x01\x00\x02\x00\x03\x00"
                 checksum = 0
                 for byte in upcase_data:
                     checksum = ((checksum >> 1) | ((checksum & 1) << 31)) + byte
                     checksum &= 0xFFFFFFFF
                 assert struct.unpack_from("<I", root, offset + 4)[0] == checksum
-                assert upcase_length == layout.upcase_length
+                assert upcase_length == layout.upcase_length == 131072
+                upcase_clusters = (upcase_length + layout.cluster_size_bytes - 1) // layout.cluster_size_bytes
+                assert upcase_clusters == 1
+                for cluster in range(upcase_cluster, upcase_cluster + upcase_clusters):
+                    allocated.add(cluster)
                 offset += 32
             else:
                 offset += 32
         bitmap = cluster_bytes(layout.bitmap_cluster)
-        expected = {layout.root_dir_cluster, layout.bitmap_cluster, layout.upcase_cluster, *allocated}
-        for cluster in expected:
+        allocated.update((layout.root_dir_cluster, layout.bitmap_cluster, layout.upcase_cluster))
+        for cluster in allocated:
             bit = cluster - 2
             assert bitmap[bit // 8] & (1 << (bit % 8))
     finally:
@@ -401,7 +398,7 @@ def test_large_image_keeps_fat_and_bitmap_lazy(tmp_path) -> None:
     """Large images use compact allocation ranges and lazy metadata."""
     source = tmp_path / "file.bin"
     source.write_bytes(b"payload")
-    config = parse(_config(tmp_path, source.name).replace("image_size_gib: 1", "image_size_gib: 10240"))
+    config = parse(_config(tmp_path, source.name).replace("image_size_gib: 1", "image_size_gib: 2047"))
     mapper = SectorMapper.from_layout(build_exfat(config))
     restored = SectorMapper.from_state(pickle.loads(pickle.dumps(mapper.to_state())))
     try:

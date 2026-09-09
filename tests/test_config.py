@@ -12,7 +12,7 @@ from remotepfs.config import ConfigError, load, parse, validate
 VALID = """\
 global:
   image_size_gib: 512
-  cluster_size_kib: 64
+  cluster_size_kib: 128
   label: REMOTEPFS
   oem_name: REMOTEPF
 sources:
@@ -34,7 +34,7 @@ entries:
 def test_parse_valid_config() -> None:
     cfg = parse(VALID)
     assert cfg.image_size_gib == 512
-    assert cfg.cluster_size_kib == 64
+    assert cfg.cluster_size_kib == 128
     assert cfg.label == "REMOTEPFS"
     assert cfg.oem_name == "REMOTEPF"
     assert cfg.usb_port == "auto"
@@ -68,6 +68,28 @@ def test_full_fat_prefetch_policy_is_enabled() -> None:
     """Parse explicit full-FAT prefetch settings."""
     cfg = parse(VALID + "prefetch:\n  fat:\n    enabled: true\n    refresh_interval_seconds: 300\n")
     assert cfg.prefetch.fat.enabled is True
+
+
+def test_exact_image_size_override() -> None:
+    """Allow matching a reference device whose size is not a whole GiB."""
+    exact_size = 250148290560
+    cfg = parse(VALID.replace("image_size_gib: 512", f"image_size_gib: 233\n  image_size_bytes: {exact_size}"))
+    assert cfg.image_size_bytes == exact_size
+
+
+def test_exact_image_size_must_be_sector_aligned() -> None:
+    """Reject exact image sizes that cannot represent complete sectors."""
+    bad = VALID.replace("image_size_gib: 512", "image_size_bytes: 513")
+    with pytest.raises(ConfigError, match="multiple of 512"):
+        parse(bad)
+
+
+def test_exact_image_size_respects_ps5_limit() -> None:
+    """Reject exact image sizes above the PS5-compatible MBR limit."""
+    oversized = 2048 * 1024**3
+    bad = VALID.replace("image_size_gib: 512", f"image_size_bytes: {oversized}")
+    with pytest.raises(ConfigError, match="must not exceed"):
+        parse(bad)
 
 
 def test_nfs_options_require_standalone_read_only_flag() -> None:
@@ -135,7 +157,7 @@ def test_yaml_aliases_rejected() -> None:
     aliased = """\
 global: &defaults
   image_size_gib: 512
-  cluster_size_kib: 64
+  cluster_size_kib: 128
   label: REMOTEPFS
   oem_name: REMOTEPF
 sources:
@@ -160,9 +182,9 @@ def test_parse_rejects_oversized_body() -> None:
         parse(big)
 
 
-def test_cluster_size_locked_to_64() -> None:
-    bad = VALID.replace("cluster_size_kib: 64", "cluster_size_kib: 32")
-    with pytest.raises(ConfigError, match="exactly 64"):
+def test_cluster_size_locked_to_128() -> None:
+    bad = VALID.replace("cluster_size_kib: 128", "cluster_size_kib: 64")
+    with pytest.raises(ConfigError, match="exactly 128"):
         parse(bad)
 
 
@@ -180,7 +202,7 @@ def test_oem_name_must_be_8_chars() -> None:
 
 
 def test_image_size_bounds() -> None:
-    for size in ("0", "262145"):
+    for size in ("0", "2049"):
         bad = VALID.replace("image_size_gib: 512", f"image_size_gib: {size}")
         with pytest.raises(ConfigError, match="image_size_gib"):
             parse(bad)
