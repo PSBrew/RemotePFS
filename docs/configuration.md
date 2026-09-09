@@ -5,7 +5,7 @@ RemotePFS reads `/etc/remotepfs/remotepfs.yaml` as YAML.
 ```yaml
 global:
   image_size_gib: 512
-  cluster_size_kib: 64
+  cluster_size_kib: 128
   label: REMOTEPFS
   oem_name: REMOTEPF
   # USB device controller: auto or explicit UDC name.
@@ -32,7 +32,7 @@ entries:
 ## Rules
 
 - `cluster_size_kib` must be `64`.
-- `image_size_gib` must be between `1` and `262144`.
+- `image_size_gib` must be between `1` and `2047` for PS5-compatible MBR layout.
 - `label` is uppercase ASCII, at most 11 characters.
 - `oem_name` is uppercase ASCII, exactly 8 characters. `REMOTEPF` is the default.
 - `sources` and `entries` must each contain at least one item.

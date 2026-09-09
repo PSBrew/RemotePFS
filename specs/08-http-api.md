@@ -73,7 +73,7 @@ Returns current active config as JSON.
   "generation": 3,
   "loaded_at": "2026-09-05T10:30:00Z",
   "global": {
-    "image_size_gib": 2048,
+    "image_size_gib": 2047,
     "cluster_size_kib": 64,
     "label": "REMOTEPFS",
     "oem_name": "REMOTEPFS"
@@ -123,8 +123,8 @@ PUT /api/config
 Content-Type: application/yaml
 
 global:
-  image_size_gib: 2048
-  cluster_size_kib: 64
+  image_size_gib: 2047
+  cluster_size_kib: 128
   label: REMOTEPFS
   oem_name: REMOTEPF
 sources:

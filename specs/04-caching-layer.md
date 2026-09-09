@@ -221,11 +221,11 @@ Unallocated regions (holes) are skipped because `extents()` marks them as
 
 | Region              | LBA Range             | Size        | Content                        |
 |---------------------|-----------------------|-------------|--------------------------------|
-| MBR + GPT stub      | 0 – 11                | ~6 KiB      | Protective MBR, GPT header, partition entries |
-| exFAT VBR           | Config-dependent      | ~1 sector   | Boot sector, OEM params, FS geometry |
+| exFAT primary boot region | 0 – 11                | ~6 KiB      | Superfloppy VBR, OEM parameters, and filesystem geometry |
+| exFAT backup boot region  | 12 – 23               | ~6 KiB      | Backup boot region and checksum sectors |
 | FAT (allocation)    | FAT region (variable) | ~9.2 MiB    | Cluster allocation chains. Size depends on virtual device image_size_gib and cluster_size_kib. |
 | Root directory      | First data clusters   | Variable    | Directory entries for all top-level game folders. |
-| Up-case table       | Up-case table region  | ~5.8 KiB    | Unicode up-case conversion table (5836 bytes, compressed by exFAT spec). |
+| Up-case table       | Up-case table region  | 128 KiB    | Full uncompressed Unicode mapping for all UTF-16 code units. |
 
 Total preload: depends on image_size_gib and cluster_size_kib. Example: **~35–40 MiB** for a 512 GiB image with 64 KiB
 clusters and ~50 games.
